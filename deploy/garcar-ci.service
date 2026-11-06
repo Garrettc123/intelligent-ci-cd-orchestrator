@@ -1,0 +1,16 @@
+[Unit]
+Description=Garcar Independent CI (local, non-deploying)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/intelligent-ci-cd-orchestrator
+ExecStart=/usr/bin/env python3 src/cicd_orchestrator.py watch --workspace %h/garcar-workspaces --output %h/garcar-ci-evidence --profile smoke --interval 120
+Restart=on-failure
+RestartSec=20
+NoNewPrivileges=true
+PrivateTmp=true
+UMask=0077
+
+[Install]
+WantedBy=default.target
