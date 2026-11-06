@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "repositories": [
     {
       "directory": "garcar-enterprise-production",
@@ -65,7 +65,8 @@
             "timeout": 900
           }
         ]
-      }
+      },
+      "github_repository": "Garrettc123/garcar-enterprise-production"
     },
     {
       "directory": "enterprise-unified-platform",
@@ -142,7 +143,8 @@
             "timeout": 900
           }
         ]
-      }
+      },
+      "github_repository": "Garrettc123/enterprise-unified-platform"
     },
     {
       "directory": "zero-human-enterprise-grid",
@@ -207,7 +209,8 @@
             "timeout": 900
           }
         ]
-      }
+      },
+      "github_repository": "Garrettc123/zero-human-enterprise-grid"
     }
   ]
 }
