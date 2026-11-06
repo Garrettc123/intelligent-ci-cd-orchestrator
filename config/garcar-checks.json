@@ -1,0 +1,213 @@
+{
+  "schema_version": 1,
+  "repositories": [
+    {
+      "directory": "garcar-enterprise-production",
+      "branch": "fix/remove-synthetic-production-claims-20261106",
+      "checks": {
+        "smoke": [
+          {
+            "name": "source integrity unit regression",
+            "command": [
+              "python",
+              "-m",
+              "unittest",
+              "discover",
+              "-s",
+              "tests",
+              "-p",
+              "test_no_synthetic_claims.py",
+              "-v"
+            ],
+            "timeout": 180
+          },
+          {
+            "name": "Python syntax",
+            "command": [
+              "python",
+              "-m",
+              "compileall",
+              "-q",
+              "backend",
+              "money_flow_loop",
+              "crm",
+              "tests"
+            ],
+            "timeout": 120
+          }
+        ],
+        "full": [
+          {
+            "name": "source integrity unit regression",
+            "command": [
+              "python",
+              "-m",
+              "unittest",
+              "discover",
+              "-s",
+              "tests",
+              "-p",
+              "test_no_synthetic_claims.py",
+              "-v"
+            ],
+            "timeout": 180
+          },
+          {
+            "name": "all Python tests",
+            "command": [
+              "python",
+              "-m",
+              "pytest",
+              "-q",
+              "-p",
+              "no:cacheprovider"
+            ],
+            "timeout": 900
+          }
+        ]
+      }
+    },
+    {
+      "directory": "enterprise-unified-platform",
+      "branch": "fix/no-synthetic-dashboard-20261106",
+      "checks": {
+        "smoke": [
+          {
+            "name": "frontend source integrity",
+            "command": [
+              "node",
+              "--test",
+              "frontend/tests/no-synthetic-page.test.mjs"
+            ],
+            "timeout": 180
+          },
+          {
+            "name": "Python syntax",
+            "command": [
+              "python",
+              "-m",
+              "compileall",
+              "-q",
+              "backend",
+              "api"
+            ],
+            "timeout": 120
+          }
+        ],
+        "full": [
+          {
+            "name": "frontend source integrity",
+            "command": [
+              "node",
+              "--test",
+              "frontend/tests/no-synthetic-page.test.mjs"
+            ],
+            "timeout": 180
+          },
+          {
+            "name": "backend tests",
+            "command": [
+              "python",
+              "-m",
+              "pytest",
+              "-q",
+              "-p",
+              "no:cacheprovider",
+              "backend/tests"
+            ],
+            "timeout": 900
+          },
+          {
+            "name": "frontend tests",
+            "command": [
+              "npm",
+              "--prefix",
+              "frontend",
+              "run",
+              "test",
+              "--",
+              "--run"
+            ],
+            "timeout": 900
+          },
+          {
+            "name": "frontend compilation",
+            "command": [
+              "npm",
+              "--prefix",
+              "frontend",
+              "run",
+              "build"
+            ],
+            "timeout": 900
+          }
+        ]
+      }
+    },
+    {
+      "directory": "zero-human-enterprise-grid",
+      "branch": "fix/no-fake-orchestration-20261106",
+      "checks": {
+        "smoke": [
+          {
+            "name": "orchestration unit regression",
+            "command": [
+              "python",
+              "-m",
+              "unittest",
+              "discover",
+              "-s",
+              "tests",
+              "-p",
+              "test_no_fake_orchestration.py",
+              "-v"
+            ],
+            "timeout": 180
+          },
+          {
+            "name": "Python syntax",
+            "command": [
+              "python",
+              "-m",
+              "compileall",
+              "-q",
+              "orchestrator",
+              "tests"
+            ],
+            "timeout": 120
+          }
+        ],
+        "full": [
+          {
+            "name": "orchestration unit regression",
+            "command": [
+              "python",
+              "-m",
+              "unittest",
+              "discover",
+              "-s",
+              "tests",
+              "-p",
+              "test_no_fake_orchestration.py",
+              "-v"
+            ],
+            "timeout": 180
+          },
+          {
+            "name": "all Python tests",
+            "command": [
+              "python",
+              "-m",
+              "pytest",
+              "-q",
+              "-p",
+              "no:cacheprovider",
+              "tests"
+            ],
+            "timeout": 900
+          }
+        ]
+      }
+    }
+  ]
+}
