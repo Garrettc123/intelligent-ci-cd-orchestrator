@@ -94,7 +94,7 @@ The `Dockerfile` uses a non-root Python/Node/Git image. A separate staging Railw
 python src/launch.py --profile smoke --output /home/runner/ci-results --interval 900
 ```
 
-Do **not** repoint Garcar production/revenue services. Persistent evidence requires a provider volume; without one, only stdout summaries survive restarts. No Railway service, additional volume or billable resource has been created, and no app has been deployed.
+Do **not** repoint Garcar production/revenue services. Persistent evidence requires a provider volume; without one, only stdout summaries survive restarts. A CI service and 512 MB evidence volume have been **staged only** inside the existing Railway `garcar-review-staging` project. They are not provisioned, running or billing until the owner explicitly applies the staged changes. No app was deployed.
 
 ### Ubuntu / Termux startup
 
@@ -103,3 +103,11 @@ An optional Linux user unit is in `deploy/garcar-ci-remote.service`. It runs eve
 ### Validation boundary
 
 The bootstrap passed isolated tests using a real temporary Git repository and deliberate clone failures. Full app checkouts were unavailable to the model-hosted execution environment (GitHub DNS is inaccessible there), so passing bootstrap tests **do not** mean PR #37, PR #92 or PR #5 application suites passed. No merge or production deployment authorization is implied.
+
+### Prepared Railway staging configuration — awaiting activation
+
+The GitHub source branch is pinned to a review commit in Railway staging. The service is called `garcar-independent-ci`; it is a **staged-create** resource, not live. The 15-minute cron and Dockerfile settings are read from `railway.json` when deployed. A 512 MB evidence volume is staged at `/home/runner/ci-results`.
+
+Railway mounts volumes as root, so only the image's entrypoint performs a brief `chown` and then uses `gosu` to run every clone/test subprocess as unprivileged user `runner`. The staged Railway variable `RAILWAY_RUN_UID=0` is necessary for this permission setup. We deliberately leave out `deploy.startCommand`, because Railway Docker deployments **replace** `ENTRYPOINT` when a custom start command is set, and that would bypass privilege dropping.
+
+Activation would create usage-based compute and volume charges; **do not apply staged changes without explicit budget authorization**. There is no live CI status to report from Railway yet.
