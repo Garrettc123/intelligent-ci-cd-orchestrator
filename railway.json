@@ -5,7 +5,6 @@
     "dockerfilePath": "Dockerfile"
   },
   "deploy": {
-    "startCommand": "python src/launch.py --profile smoke --output /home/runner/ci-results",
     "cronSchedule": "*/15 * * * *",
     "restartPolicyType": "NEVER"
   }
