@@ -71,3 +71,35 @@ This runner's unit tests are **not the application suites** for the three Garcar
 ### Threat boundaries
 
 The runner does not create a VM/container, remove network access, or guarantee a test process cannot access local files. Even with scrubbed inherited environment variables, a malicious test can read files available to the host OS user. Use a dedicated unprivileged machine account or disposable container for untrusted code. Git origin matching is a local config consistency check, not proof of source trust. The report SHA-256 file is **not signed**; attackers able to rewrite the report and checksum can falsify them both. Keep evidence on protected storage with suitable backups.
+## Run the actual GitHub remediation branches without manual checkouts
+
+The new `src/launch.py` clones all three approved public remediation branches into a *fresh disposable workspace* on each run. It verifies repository remote, branch, SHA and test results; only the hash-checked evidence survives. This is independent of GitHub Actions and needs no GitHub token.
+
+Run from the repository's `fix/real-independent-ci-20261106` branch on your Ubuntu/Termux or laptop host:
+
+```bash
+python3 -m unittest discover -s tests -v
+python3 src/launch.py --profile smoke --output "$HOME/garcar-ci-evidence"
+# Continuous polling while this host is powered on:
+python3 src/launch.py --profile smoke --output "$HOME/garcar-ci-evidence" --interval 900
+```
+
+A zero exit code is possible only when *every* configured check genuinely ran and passed. Clone failures, missing tools and source mismatches produce a nonzero result with a blocked/failed report. The `full` profile needs app dependencies installed separately; the smoke profile uses Python and Node.js.
+
+### Optional Railway worker (additional usage charges may apply)
+
+The `Dockerfile` uses a non-root Python/Node/Git image. A separate staging Railway service could run the default one-shot command on a cron or use:
+
+```bash
+python src/launch.py --profile smoke --output /home/runner/ci-results --interval 900
+```
+
+Do **not** repoint Garcar production/revenue services. Persistent evidence requires a provider volume; without one, only stdout summaries survive restarts. No Railway service, additional volume or billable resource has been created, and no app has been deployed.
+
+### Ubuntu / Termux startup
+
+An optional Linux user unit is in `deploy/garcar-ci-remote.service`. It runs every 15 minutes; first create `$HOME/garcar-ci-evidence` and install the unit via your normal systemd user manager. On Termux, install Python, Git and Node.js, then run the continuous command in a foreground session. Android battery optimization can stop background processes.
+
+### Validation boundary
+
+The bootstrap passed isolated tests using a real temporary Git repository and deliberate clone failures. Full app checkouts were unavailable to the model-hosted execution environment (GitHub DNS is inaccessible there), so passing bootstrap tests **do not** mean PR #37, PR #92 or PR #5 application suites passed. No merge or production deployment authorization is implied.
