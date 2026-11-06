@@ -1,352 +1,379 @@
-"""Intelligent CI/CD Orchestrator
+"""Independent CI executor for trusted Git worktrees.
 
-AI-powered CI/CD with predictive testing, zero-downtime deploys,
-auto-rollback, canary releases, chaos engineering. Deploy 10x faster.
+Runs real checks; requires repository/branch/remote match; records source before
+and after, process exit status and bounded logs. Never deploys, merges, or
+reports unexecuted checks as successful. Not a container security boundary.
 """
+from __future__ import annotations
 
-import asyncio
-import logging
-from typing import Dict, List, Any, Optional
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta
-from enum import Enum
-import random
+import argparse
+from datetime import datetime, timezone
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+from urllib.parse import urlsplit
+import uuid
 
-logger = logging.getLogger(__name__)
+ALLOWED_EXECUTABLES = {"python", "node", "npm"}
+MAX_TIMEOUT = 3600
+MAX_LOG_BYTES = 4 * 1024 * 1024
+_GITHUB_NAME = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
-class PipelineStage(Enum):
-    BUILD = "build"
-    TEST = "test"
-    SECURITY_SCAN = "security_scan"
-    DEPLOY_CANARY = "deploy_canary"
-    DEPLOY_PROD = "deploy_prod"
-    ROLLBACK = "rollback"
 
-class DeploymentStatus(Enum):
-    PENDING = "pending"
-    RUNNING = "running"
-    SUCCESS = "success"
-    FAILED = "failed"
-    ROLLED_BACK = "rolled_back"
+def utcnow() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
-@dataclass
-class Build:
-    id: str
-    commit_sha: str
-    branch: str
-    started_at: datetime = field(default_factory=datetime.now)
-    completed_at: Optional[datetime] = None
-    status: DeploymentStatus = DeploymentStatus.PENDING
-    stages: Dict[str, Dict[str, Any]] = field(default_factory=dict)
-    duration_seconds: float = 0.0
 
-class PredictiveTestSelector:
-    """AI-powered test selection based on code changes"""
-    def __init__(self):
-        self.test_history: Dict[str, List[float]] = {}
-        self.tests_skipped = 0
-        
-    async def select_tests(self, changed_files: List[str], all_tests: List[str]) -> List[str]:
-        selected = []
-        for test in all_tests:
-            # Predict if test will fail based on changes
-            relevance_score = self._calculate_relevance(test, changed_files)
-            if relevance_score > 0.3:  # 70% test reduction
-                selected.append(test)
-            else:
-                self.tests_skipped += 1
-        
-        logger.info(f"Test selection: {len(selected)}/{len(all_tests)} tests, skipped {self.tests_skipped}")
-        return selected
-        
-    def _calculate_relevance(self, test: str, changed_files: List[str]) -> float:
-        # Simplified relevance scoring
-        for file in changed_files:
-            if any(part in test for part in file.split('/')):
-                return 0.8 + random.random() * 0.2
-        return random.random() * 0.4
+def sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
 
-class BuildOptimizer:
-    """Optimize build times with caching and parallelization"""
-    def __init__(self):
-        self.cache: Dict[str, Any] = {}
-        self.build_times: List[float] = []
-        
-    async def build(self, source_files: List[str]) -> Dict[str, Any]:
-        start = datetime.now()
-        
-        # Check cache
-        cache_key = hash(tuple(source_files))
-        if cache_key in self.cache:
-            logger.info("Build cache hit!")
-            return self.cache[cache_key]
-            
-        # Parallel build
-        await asyncio.sleep(0.05)  # Simulate build
-        
-        result = {
-            'artifacts': [f'artifact_{i}.jar' for i in range(5)],
-            'docker_images': ['app:latest', 'app:v1.2.3'],
-            'size_mb': 150
+
+def git(worktree: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(worktree), *args], capture_output=True,
+        text=True, timeout=15, check=True,
+    )
+    return result.stdout.strip()
+
+
+def github_identity(remote: str) -> str:
+    """Identify only github.com owner/repo remotes; reject embedded credentials.
+
+    This validates local *configuration*, not cryptographic commit provenance.
+    """
+    if remote.startswith("git@github.com:"):
+        identity = remote[len("git@github.com:"):]
+    else:
+        url = urlsplit(remote)
+        if url.scheme not in ("https", "ssh") or url.hostname != "github.com":
+            raise ValueError("Origin must point to github.com")
+        if url.password or url.query or url.fragment or url.port:
+            raise ValueError("Origin includes unsupported URL components")
+        if url.username not in (None, "git") or (url.username and url.scheme != "ssh"):
+            raise ValueError("Origin contains credentials or unexpected user")
+        identity = url.path.lstrip("/")
+    if identity.endswith(".git"):
+        identity = identity[:-4]
+    if not _GITHUB_NAME.fullmatch(identity):
+        raise ValueError("Origin is not a canonical GitHub owner/repository URL")
+    return identity.casefold()
+
+
+def resolve_project(workspace: Path, name: str) -> Path:
+    if not name or name in (".", "..") or "/" in name or "\\" in name:
+        raise ValueError("Repository directory must be a single safe name")
+    folder = (workspace / name).resolve()
+    if not folder.is_relative_to(workspace.resolve()):
+        raise ValueError("Repository path escapes workspace")
+    return folder
+
+
+def validate_command(command: object) -> list[str]:
+    if (not isinstance(command, list) or not command or
+            not all(isinstance(x, str) and x and "\x00" not in x for x in command)):
+        raise ValueError("Check command must be a nonempty argv list")
+    if command[0] not in ALLOWED_EXECUTABLES:
+        raise ValueError("Unapproved executable: " + command[0])
+    if command[0] == "python" and any(x in ("-c", "-i", "--interactive") for x in command):
+        raise ValueError("Inline/interactive Python code is not permitted in check manifests")
+    if command[0] == "node" and any(x in ("-e", "--eval", "-p", "--print") for x in command):
+        raise ValueError("Inline Node code is not permitted in check manifests")
+    return command
+
+
+def load_manifest(path: Path, profile: str) -> tuple[list[dict], str]:
+    raw = path.read_bytes()
+    doc = json.loads(raw)
+    if doc.get("schema_version") != 2:
+        raise ValueError("Manifest schema_version must be 2")
+    repos = doc.get("repositories")
+    if not isinstance(repos, list) or not repos:
+        raise ValueError("Manifest must contain at least one repository")
+    seen = set()
+    for repo in repos:
+        if not isinstance(repo, dict) or not isinstance(repo.get("directory"), str):
+            raise ValueError("Repository must specify directory")
+        directory = repo["directory"]
+        if directory in seen:
+            raise ValueError("Duplicate repository directory")
+        seen.add(directory)
+        if not isinstance(repo.get("branch"), str) or not repo["branch"]:
+            raise ValueError("Expected branch is required")
+        identity = repo.get("github_repository")
+        if not isinstance(identity, str) or not _GITHUB_NAME.fullmatch(identity):
+            raise ValueError("Every repository must declare canonical github_repository")
+        checks = repo.get("checks", {}).get(profile)
+        if not isinstance(checks, list) or not checks:
+            raise ValueError(f"Missing checks for {directory}: {profile}")
+        check_names = set()
+        for check in checks:
+            if not isinstance(check, dict) or not isinstance(check.get("name"), str) or not check["name"]:
+                raise ValueError("Checks require names")
+            if check["name"] in check_names:
+                raise ValueError("Duplicate check name")
+            check_names.add(check["name"])
+            validate_command(check.get("command"))
+            timeout = check.get("timeout", 180)
+            if type(timeout) is not int or not 1 <= timeout <= MAX_TIMEOUT:
+                raise ValueError("Check timeout must be 1 to 3600 seconds")
+    return repos, sha256(raw)
+
+
+def _snapshot(folder: Path) -> dict[str, str | bool]:
+    """Snapshot tracked/untracked status, branch and HEAD without network I/O."""
+    return {
+        "branch": git(folder, "branch", "--show-current"),
+        "commit": git(folder, "rev-parse", "HEAD"),
+        "dirty": bool(git(folder, "status", "--porcelain", "--untracked-files=all")),
+    }
+
+
+def execute_check(folder: Path, check: dict, log_dir: Path) -> dict:
+    argv = validate_command(check["command"])
+    command = [sys.executable if argv[0] == "python" else argv[0], *argv[1:]]
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / (uuid.uuid4().hex + ".log")
+    started = utcnow()
+    t0 = time.monotonic()
+    truncated = False
+    with tempfile.TemporaryDirectory(prefix="garcar-ci-home-") as clean_home:
+        env = {
+            "PATH": os.environ.get("PATH", ""),
+            "HOME": clean_home,
+            "XDG_CONFIG_HOME": clean_home,
+            "CI": "true",
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "PYTHONPYCACHEPREFIX": os.path.join(clean_home, "pycache"),
+            "PYTHONNOUSERSITE": "1",
+            "LANG": "C.UTF-8",
+            "TMPDIR": clean_home,
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
         }
-        
-        self.cache[cache_key] = result
-        build_time = (datetime.now() - start).total_seconds()
-        self.build_times.append(build_time)
-        
-        logger.info(f"Build completed in {build_time:.2f}s")
-        return result
-
-class CanaryDeployer:
-    """Canary deployment with automatic rollback"""
-    def __init__(self):
-        self.canary_traffic_percent = 5
-        self.deployments: List[Dict[str, Any]] = []
-        
-    async def deploy_canary(self, build_id: str, version: str) -> bool:
-        logger.info(f"Deploying canary: {version} ({self.canary_traffic_percent}% traffic)")
-        
-        # Deploy to canary
-        await asyncio.sleep(0.1)
-        
-        # Monitor metrics
-        metrics = await self._monitor_canary(version)
-        
-        if metrics['error_rate'] < 0.01 and metrics['latency_p95'] < 500:
-            logger.info(f"Canary healthy! Error rate: {metrics['error_rate']:.3f}, Latency P95: {metrics['latency_p95']:.1f}ms")
-            self.deployments.append({
-                'build_id': build_id,
-                'version': version,
-                'status': 'canary_success',
-                'timestamp': datetime.now()
-            })
-            return True
+        if os.name == "nt":
+            for key in ("SYSTEMROOT", "WINDIR", "PATHEXT", "COMSPEC"):
+                if key in os.environ:
+                    env[key] = os.environ[key]
+        executable = command[0]
+        if executable != sys.executable and shutil.which(executable, path=env["PATH"]) is None:
+            code, status, message = 127, "blocked", "Executable not installed: " + executable
+            log_file.write_text(message, encoding="utf-8")
         else:
-            logger.warning(f"Canary failed! Auto-rolling back...")
-            await self.rollback(build_id)
-            return False
-            
-    async def _monitor_canary(self, version: str) -> Dict[str, float]:
-        await asyncio.sleep(0.05)
-        return {
-            'error_rate': random.random() * 0.02,  # 0-2% error rate
-            'latency_p95': 300 + random.random() * 200,  # 300-500ms
-            'cpu_usage': 50 + random.random() * 30
-        }
-        
-    async def promote_to_production(self, build_id: str):
-        logger.info(f"Promoting {build_id} to 100% traffic")
-        self.canary_traffic_percent = 100
-        await asyncio.sleep(0.1)
-        
-    async def rollback(self, build_id: str):
-        logger.info(f"Rolling back {build_id}")
-        # Restore previous version
-        await asyncio.sleep(0.05)
+            with tempfile.TemporaryFile(mode="w+b") as spool:
+                try:
+                    proc = subprocess.Popen(
+                        command, cwd=folder, env=env, stdin=subprocess.DEVNULL,
+                        stdout=spool, stderr=subprocess.STDOUT,
+                        start_new_session=os.name == "posix",
+                    )
+                    try:
+                        code = proc.wait(timeout=check.get("timeout", 180))
+                        status = "passed" if code == 0 else "failed"
+                    except subprocess.TimeoutExpired:
+                        code, status = 124, "failed"
+                        if os.name == "posix":
+                            os.killpg(proc.pid, signal.SIGKILL)
+                        else:
+                            proc.kill()
+                        proc.wait(timeout=10)
+                except OSError as exc:
+                    code, status = 127, "blocked"
+                    spool.write(f"Failed to start check: {type(exc).__name__}".encode())
+                spool.flush()
+                size = spool.tell()
+                spool.seek(0)
+                with log_file.open("wb") as dst:
+                    shutil.copyfileobj(spool, dst, MAX_LOG_BYTES + 1) if size <= MAX_LOG_BYTES else dst.write(spool.read(MAX_LOG_BYTES))
+                    if size > MAX_LOG_BYTES:
+                        truncated = True
+                        dst.write(f"\n[Garcar CI: log truncated at {MAX_LOG_BYTES} bytes; {size} bytes captured in spool]\n".encode())
+                    if code == 124:
+                        dst.write(f"\n[Garcar CI: command exceeded {check.get('timeout', 180)} second timeout]\n".encode())
+    log_digest = hashlib.sha256()
+    with log_file.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(65536), b""):
+            log_digest.update(chunk)
+    return {
+        "name": check["name"], "command": argv, "status": status,
+        "exit_code": code, "started_at": started,
+        "duration_seconds": round(time.monotonic() - t0, 3),
+        "log": log_file.name, "log_sha256": log_digest.hexdigest(),
+        "log_truncated": truncated,
+    }
 
-class ChaosEngineer:
-    """Chaos engineering for resilience testing"""
-    def __init__(self):
-        self.experiments_run = 0
-        self.failures_injected = 0
-        
-    async def inject_failure(self, target: str, failure_type: str):
-        self.experiments_run += 1
-        self.failures_injected += 1
-        
-        logger.info(f"Chaos: Injecting {failure_type} into {target}")
-        
-        # Simulate failure
-        await asyncio.sleep(0.02)
-        
-        # Check if system recovered
-        recovered = random.random() > 0.2  # 80% recovery rate
-        
-        if recovered:
-            logger.info(f"System recovered from {failure_type}")
-        else:
-            logger.warning(f"System failed to recover from {failure_type}")
-            
-        return recovered
 
-class SecurityScanner:
-    """Automated security vulnerability scanning"""
-    def __init__(self):
-        self.scans_run = 0
-        self.vulnerabilities_found = 0
-        
-    async def scan(self, artifacts: List[str]) -> Dict[str, Any]:
-        self.scans_run += 1
-        
-        logger.info(f"Scanning {len(artifacts)} artifacts for vulnerabilities...")
-        await asyncio.sleep(0.05)
-        
-        # Simulate vulnerability detection
-        vulns = []
-        if random.random() < 0.1:  # 10% chance of finding vuln
-            vulns.append({
-                'severity': 'high',
-                'cve': 'CVE-2024-12345',
-                'package': 'log4j',
-                'fixed_in': '2.17.1'
-            })
-            self.vulnerabilities_found += 1
-            
-        result = {
-            'vulnerabilities': vulns,
-            'passed': len(vulns) == 0,
-            'critical_count': sum(1 for v in vulns if v['severity'] == 'critical'),
-            'high_count': sum(1 for v in vulns if v['severity'] == 'high')
-        }
-        
-        if result['passed']:
-            logger.info("Security scan passed!")
-        else:
-            logger.warning(f"Found {len(vulns)} vulnerabilities")
-            
-        return result
-
-class IntelligentCICD:
-    """Main CI/CD orchestrator"""
-    def __init__(self):
-        self.test_selector = PredictiveTestSelector()
-        self.build_optimizer = BuildOptimizer()
-        self.canary = CanaryDeployer()
-        self.chaos = ChaosEngineer()
-        self.security = SecurityScanner()
-        self.builds: List[Build] = []
-        self.successful_deployments = 0
-        self.failed_deployments = 0
-        
-    async def run_pipeline(self, commit_sha: str, branch: str, changed_files: List[str]) -> Build:
-        build = Build(
-            id=f"build_{len(self.builds)}",
-            commit_sha=commit_sha,
-            branch=branch
-        )
-        self.builds.append(build)
-        build.status = DeploymentStatus.RUNNING
-        
-        logger.info(f"\n{'='*60}")
-        logger.info(f"Starting pipeline: {build.id}")
-        logger.info(f"Commit: {commit_sha}, Branch: {branch}")
-        logger.info(f"{'='*60}")
-        
+def run(manifest: Path, workspace: Path, output: Path, profile: str = "smoke", *, allow_dirty: bool = False) -> tuple[dict, Path]:
+    repos, manifest_hash = load_manifest(manifest, profile)
+    output = output.resolve()
+    run_dir = output / (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8])
+    run_dir.mkdir(parents=True, exist_ok=False)
+    records = []
+    for repo in repos:
+        name = repo["directory"]
+        record = {"repository": name, "expected_branch": repo["branch"],
+                  "expected_github_repository": repo["github_repository"], "status": "blocked",
+                  "commit": None, "checks": []}
+        records.append(record)
         try:
-            # Stage 1: Build
-            logger.info("\n[1/5] BUILD STAGE")
-            artifacts = await self.build_optimizer.build(changed_files)
-            build.stages['build'] = {'status': 'success', 'artifacts': artifacts}
-            
-            # Stage 2: Predictive Testing
-            logger.info("\n[2/5] INTELLIGENT TEST SELECTION")
-            all_tests = [f'test_{i}' for i in range(100)]
-            selected_tests = await self.test_selector.select_tests(changed_files, all_tests)
-            
-            # Run tests in parallel
-            test_results = await self._run_tests(selected_tests)
-            build.stages['test'] = {'status': 'success', 'tests_run': len(selected_tests), 'passed': test_results['passed']}
-            
-            if not test_results['passed']:
-                raise Exception("Tests failed")
-                
-            # Stage 3: Security Scan
-            logger.info("\n[3/5] SECURITY SCAN")
-            scan_result = await self.security.scan(artifacts['artifacts'])
-            build.stages['security'] = scan_result
-            
-            if not scan_result['passed']:
-                raise Exception("Security vulnerabilities found")
-                
-            # Stage 4: Canary Deployment
-            logger.info("\n[4/5] CANARY DEPLOYMENT")
-            version = f"v{len(self.builds)}.0.0"
-            canary_success = await self.canary.deploy_canary(build.id, version)
-            build.stages['canary'] = {'status': 'success' if canary_success else 'failed'}
-            
-            if not canary_success:
-                raise Exception("Canary deployment failed")
-                
-            # Stage 5: Production Deployment
-            logger.info("\n[5/5] PRODUCTION DEPLOYMENT")
-            await self.canary.promote_to_production(build.id)
-            build.stages['production'] = {'status': 'success'}
-            
-            # Chaos Engineering (post-deployment)
-            logger.info("\nRUNNING CHAOS EXPERIMENTS")
-            await self.chaos.inject_failure('api-service', 'pod_kill')
-            
-            build.status = DeploymentStatus.SUCCESS
-            build.completed_at = datetime.now()
-            build.duration_seconds = (build.completed_at - build.started_at).total_seconds()
-            self.successful_deployments += 1
-            
-            logger.info(f"\n{'='*60}")
-            logger.info(f"✓ Pipeline succeeded in {build.duration_seconds:.2f}s")
-            logger.info(f"{'='*60}")
-            
-        except Exception as e:
-            build.status = DeploymentStatus.FAILED
-            build.completed_at = datetime.now()
-            build.duration_seconds = (build.completed_at - build.started_at).total_seconds()
-            self.failed_deployments += 1
-            logger.error(f"\n✗ Pipeline failed: {e}")
-            
-        return build
-        
-    async def _run_tests(self, tests: List[str]) -> Dict[str, Any]:
-        await asyncio.sleep(0.1)  # Parallel test execution
-        passed = random.random() > 0.05  # 95% pass rate
-        return {
-            'passed': passed,
-            'total': len(tests),
-            'failed': 0 if passed else random.randint(1, 3)
-        }
-        
-    def get_metrics(self) -> Dict[str, Any]:
-        avg_build_time = sum(self.build_optimizer.build_times) / len(self.build_optimizer.build_times) if self.build_optimizer.build_times else 0
-        
-        return {
-            'total_builds': len(self.builds),
-            'successful_deployments': self.successful_deployments,
-            'failed_deployments': self.failed_deployments,
-            'success_rate': self.successful_deployments / len(self.builds) if self.builds else 0,
-            'avg_build_time': avg_build_time,
-            'tests_skipped': self.test_selector.tests_skipped,
-            'security_scans': self.security.scans_run,
-            'vulnerabilities_found': self.security.vulnerabilities_found,
-            'chaos_experiments': self.chaos.experiments_run
-        }
+            folder = resolve_project(workspace, name)
+            if not folder.is_dir():
+                raise ValueError("Checkout missing: " + str(folder))
+            before = _snapshot(folder)
+            record.update({"commit": before["commit"], "actual_branch": before["branch"],
+                           "dirty": before["dirty"]})
+            if before["branch"] != repo["branch"]:
+                raise ValueError("Expected branch " + repo["branch"] + ", got " + str(before["branch"]))
+            origin = git(folder, "config", "--get", "remote.origin.url")
+            if github_identity(origin) != repo["github_repository"].casefold():
+                raise ValueError("Git origin does not match approved repository")
+            record["remote_config_verified"] = True
+            if before["dirty"] and not allow_dirty:
+                raise ValueError("Checkout contains uncommitted changes")
+            record["source_verified"] = not before["dirty"]
+        except (ValueError, OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            record["reason"] = "Origin not configured or source not eligible" if isinstance(exc, subprocess.CalledProcessError) else str(exc)
+            continue
+        for check in repo["checks"][profile]:
+            outcome = execute_check(folder, check, run_dir)
+            record["checks"].append(outcome)
+            if outcome["status"] != "passed":
+                break
+        try:
+            after = _snapshot(folder)
+            if after["branch"] != before["branch"] or after["commit"] != before["commit"]:
+                record["source_verified"] = False
+                record["reason"] = "Source branch or commit changed while tests ran"
+            elif after["dirty"]:
+                record["source_verified"] = False
+                record["reason"] = "Source checkout dirty after checks; results not eligible for verified pass"
+            record["dirty_after"] = after["dirty"]
+        except (ValueError, OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            record["source_verified"] = False
+            record["reason"] = "Could not verify source state after checks"
+        all_passed = len(record["checks"]) == len(repo["checks"][profile]) and all(
+            outcome["status"] == "passed" for outcome in record["checks"]
+        )
+        record["status"] = ("passed" if all_passed and record["source_verified"] else
+                            "blocked" if not record["source_verified"] or any(
+                                outcome["status"] == "blocked" for outcome in record["checks"]
+                            ) else "failed")
+    success = bool(records) and all(r["status"] == "passed" and r.get("source_verified", False)
+                                    and r.get("remote_config_verified", False) for r in records)
+    report = {
+        "schema_version": 2, "runner": "garcar-independent-ci", "profile": profile,
+        "finished_at": utcnow(), "manifest_sha256": manifest_hash,
+        "status": "passed" if success else "failed_or_blocked",
+        "source_verified": success, "deployment_performed": False,
+        "repositories": records,
+    }
+    data = (json.dumps(report, indent=2, sort_keys=True) + "\n").encode()
+    (run_dir / "report.json").write_bytes(data)
+    (run_dir / "report.sha256").write_text(sha256(data) + "  report.json\n")
+    return report, run_dir
 
-async def demo():
-    cicd = IntelligentCICD()
-    
-    # Run multiple pipelines
-    commits = [
-        ('abc123', 'main', ['src/api/users.py', 'src/api/auth.py']),
-        ('def456', 'feature/new-ui', ['src/ui/dashboard.tsx']),
-        ('ghi789', 'main', ['src/core/engine.py', 'tests/test_engine.py']),
-    ]
-    
-    for commit_sha, branch, files in commits:
-        await cicd.run_pipeline(commit_sha, branch, files)
-        await asyncio.sleep(0.1)
-        
-    # Generate report
-    metrics = cicd.get_metrics()
-    logger.info(f"\n{'='*60}")
-    logger.info("CI/CD METRICS")
-    logger.info(f"{'='*60}")
-    logger.info(f"Total Builds: {metrics['total_builds']}")
-    logger.info(f"Success Rate: {metrics['success_rate']:.1%}")
-    logger.info(f"Avg Build Time: {metrics['avg_build_time']:.2f}s")
-    logger.info(f"Tests Skipped: {metrics['tests_skipped']} (70% reduction)")
-    logger.info(f"Security Scans: {metrics['security_scans']}")
-    logger.info(f"Vulnerabilities: {metrics['vulnerabilities_found']}")
-    logger.info(f"Chaos Experiments: {metrics['chaos_experiments']}")
-    logger.info(f"\nDEPLOYMENT SPEED: 10X FASTER")
-    logger.info(f"{'='*60}")
+
+def verify(run_dir: Path) -> bool:
+    try:
+        if (run_dir / "report.json").is_symlink() or (run_dir / "report.sha256").is_symlink():
+            return False
+        report_data = (run_dir / "report.json").read_bytes()
+        expected = (run_dir / "report.sha256").read_text().split()[0]
+        if sha256(report_data) != expected:
+            return False
+        doc = json.loads(report_data)
+        for repo in doc["repositories"]:
+            for check in repo["checks"]:
+                logname = check["log"]
+                if Path(logname).name != logname or not re.fullmatch(r"[a-f0-9]{32}\.log", logname):
+                    return False
+                if (run_dir / logname).is_symlink():
+                    return False
+                digest = hashlib.sha256()
+                with (run_dir / logname).open("rb") as stream:
+                    for chunk in iter(lambda: stream.read(65536), b""):
+                        digest.update(chunk)
+                if digest.hexdigest() != check["log_sha256"]:
+                    return False
+        return True
+    except (OSError, ValueError, KeyError, IndexError, TypeError, json.JSONDecodeError):
+        return False
+
+
+def watch_state(manifest: Path, workspace: Path, profile: str) -> tuple:
+    repos, digest = load_manifest(manifest, profile)
+    state = [("manifest", digest)]
+    for repo in repos:
+        try:
+            folder = resolve_project(workspace, repo["directory"])
+            snap = _snapshot(folder)
+            # Include content changes, not just the commit hash. This detects
+            # working-tree edits that keep the same porcelain status category.
+            changes = git(folder, "diff", "--binary", "HEAD")
+            untracked = git(folder, "ls-files", "--others", "--exclude-standard")
+            untracked_info = []
+            for file in untracked.splitlines():
+                p = folder / file
+                try:
+                    stat = p.lstat()
+                    untracked_info.append((file, stat.st_size, stat.st_mtime_ns))
+                except OSError:
+                    untracked_info.append((file, "unavailable"))
+            fingerprint = sha256((changes + json.dumps(untracked_info)).encode())
+            state.append((repo["directory"], snap["branch"], snap["commit"], snap["dirty"], fingerprint))
+        except (ValueError, OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            state.append((repo["directory"], "missing_or_blocked", type(exc).__name__))
+    return tuple(state)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Garcar Independent CI: local, fail-closed, no deployment")
+    sub = parser.add_subparsers(dest="action", required=True)
+    for action in ("run", "watch"):
+        p = sub.add_parser(action)
+        p.add_argument("--manifest", type=Path, default=Path("config/garcar-checks.json"))
+        p.add_argument("--workspace", type=Path, required=True)
+        p.add_argument("--output", type=Path, default=Path("ci-results"))
+        p.add_argument("--profile", choices=("smoke", "full"), default="smoke")
+        p.add_argument("--allow-dirty", action="store_true", help="Run experimental checks; never report verified success")
+        if action == "watch":
+            p.add_argument("--interval", type=int, default=120)
+    v = sub.add_parser("verify")
+    v.add_argument("report_directory", type=Path)
+    args = parser.parse_args(argv)
+    if args.action == "verify":
+        ok = verify(args.report_directory)
+        print("Evidence files valid" if ok else "Evidence files invalid or missing")
+        return 0 if ok else 1
+    if args.action == "watch":
+        if args.interval < 10:
+            parser.error("Watch interval must be at least 10 seconds")
+        last = None
+        try:
+            while True:
+                try:
+                    state = watch_state(args.manifest, args.workspace, args.profile)
+                except (ValueError, OSError, json.JSONDecodeError):
+                    state = ("invalid_manifest_or_source",)
+                if state != last:
+                    report, location = run(args.manifest, args.workspace, args.output, args.profile,
+                                           allow_dirty=args.allow_dirty)
+                    print(json.dumps({"status": report["status"], "report": str(location)}, sort_keys=True), flush=True)
+                    last = state
+                time.sleep(args.interval)
+        except KeyboardInterrupt:
+            return 130
+    report, location = run(args.manifest, args.workspace, args.output, args.profile, allow_dirty=args.allow_dirty)
+    print(json.dumps({"status": report["status"], "report": str(location)}, sort_keys=True))
+    return 0 if report["status"] == "passed" else 1
+
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format='%(message)s')
-    asyncio.run(demo())
+    sys.exit(main())
