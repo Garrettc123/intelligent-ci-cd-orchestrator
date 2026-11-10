@@ -9,6 +9,8 @@ import argparse
 import hashlib
 import json
 import os
+import re
+import shutil
 from pathlib import Path
 import signal
 import subprocess
@@ -71,6 +73,37 @@ def _clone(repo: dict, workspace: Path, *, timeout: int = 120) -> None:
         )
 
 
+
+# Historical reports on a 512MB Railway evidence volume are bounded to avoid
+# exhausting the storage and preventing subsequent CI runs. Reports are not
+# externally immutable; preserve important reports separately before rotation.
+_EVIDENCE_FOLDER = re.compile(r"^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{8}$")
+
+
+def rotate_evidence(output: Path, keep: int = 12) -> int:
+    """Keep newest N *verified* report folders; never follow symlinks.
+
+    Invalid or corrupt evidence is deliberately NOT removed automatically:
+    operators must inspect it, rather than silently erasing failure records.
+    """
+    if keep < 1:
+        raise ValueError("Evidence retention must keep at least one report")
+    if output.is_symlink():
+        raise ValueError("Evidence output must not be a symlink")
+    candidates: list[Path] = []
+    for path in output.iterdir():
+        if path.is_symlink() or not path.is_dir() or not _EVIDENCE_FOLDER.fullmatch(path.name):
+            continue
+        if verify(path):
+            candidates.append(path)
+    candidates.sort(key=lambda p: p.name, reverse=True)
+    removed = 0
+    for path in candidates[keep:]:
+        shutil.rmtree(path)
+        removed += 1
+    return removed
+
+
 def launch_once(manifest: Path, output: Path, profile: str = "smoke") -> tuple[dict, Path]:
     """Freshly clone approved public branches, then check true command results."""
     repos, _ = load_manifest(manifest, profile)
@@ -94,6 +127,8 @@ def launch_once(manifest: Path, output: Path, profile: str = "smoke") -> tuple[d
         )
     if not verify(location):
         raise RuntimeError("CI evidence integrity verification failed")
+    # The active report is verified before any old, also-verified reports rotate.
+    rotate_evidence(output, keep=12)
     return report, location
 
 
