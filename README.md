@@ -143,3 +143,10 @@ python3 src/private_pr_ci.py --profile full --output "$HOME/garcar-ci-evidence"
 For the *already staged* Railway worker, the entrypoint also supports a deliberate mode switch. Default is `GARCAR_CI_MODE=public` (the original approved public smoke suite). If an operator later configures `GARCAR_CI_MODE=private`, along with the protected repository, branch, pinned SHA and read-only credential variables, the same worker runs the full private Python suite. It still runs under the unprivileged `runner` identity, never merges or deploys, and needs explicit hosting-cost approval before activation. Do not select private mode with missing credentials; it will produce only a blocked preflight result.
 
 Passing these private CI checks does not repair a GitHub account-level Actions runner failure or automatically satisfy a repository's required GitHub status checks. Keep branch protection and human approval intact.
+
+### Automatic staged-worker safety controls
+
+- The public smoke manifest now pins each repository to an exact reviewed commit. The original `enterprise-unified-platform` review branch was merged and deleted, so that checkout now targets an inspected `main` commit. If a branch moves, the runner fails closed until the expected commit is reviewed and updated.
+- The Railway Dockerfile runs the actual independent-runner Python regression suite during image build. Any failing suite blocks deployment; a build success is **not** proof the downstream application suites passed.
+- On the 512 MB persistent evidence volume, the public launcher rotates older **already verified** report directories, retaining the latest 12. Corrupted/unverified directories are preserved for investigation. Back up critical receipts to external storage before rotation; hash verification provides integrity checks, not signing or immutability.
+- The stage remains configured for the public smoke profile. The private security PR needs a separate read-only GitHub credential before enabling `GARCAR_CI_MODE=private`; no token is available in the connected CI environment.
