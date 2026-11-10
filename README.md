@@ -139,4 +139,7 @@ python3 src/private_pr_ci.py --profile full --output "$HOME/garcar-ci-evidence"
 
 **Activation state:** the existing Railway `garcar-independent-ci` service and evidence volume remain STAGED, with no running deployment and no new billing. Its default cron currently targets public approved remediation branches, not these private PRs. Enabling this private path on Railway requires separately configuring the target identity and read-only repository secret, reviewing its command/profile, and explicit approval for usage-based compute/storage charges. Do not enable a new paid runner or merge production PRs automatically.
 
+
+For the *already staged* Railway worker, the entrypoint also supports a deliberate mode switch. Default is `GARCAR_CI_MODE=public` (the original approved public smoke suite). If an operator later configures `GARCAR_CI_MODE=private`, along with the protected repository, branch, pinned SHA and read-only credential variables, the same worker runs the full private Python suite. It still runs under the unprivileged `runner` identity, never merges or deploys, and needs explicit hosting-cost approval before activation. Do not select private mode with missing credentials; it will produce only a blocked preflight result.
+
 Passing these private CI checks does not repair a GitHub account-level Actions runner failure or automatically satisfy a repository's required GitHub status checks. Keep branch protection and human approval intact.
