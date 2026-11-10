@@ -66,11 +66,13 @@
           }
         ]
       },
-      "github_repository": "Garrettc123/garcar-enterprise-production"
+      "github_repository": "Garrettc123/garcar-enterprise-production",
+      "expected_commit": "1445c5d347de1f93fd615b87019bbc5a5078bfb2",
+      "private": false
     },
     {
       "directory": "enterprise-unified-platform",
-      "branch": "fix/no-synthetic-dashboard-20261106",
+      "branch": "main",
       "checks": {
         "smoke": [
           {
@@ -144,7 +146,9 @@
           }
         ]
       },
-      "github_repository": "Garrettc123/enterprise-unified-platform"
+      "github_repository": "Garrettc123/enterprise-unified-platform",
+      "expected_commit": "983360cb46159047df8f54e03ecddcca60520bb7",
+      "private": false
     },
     {
       "directory": "zero-human-enterprise-grid",
@@ -210,7 +214,9 @@
           }
         ]
       },
-      "github_repository": "Garrettc123/zero-human-enterprise-grid"
+      "github_repository": "Garrettc123/zero-human-enterprise-grid",
+      "expected_commit": "a17e8e29ef8dad499a44181f6d149cf657eb9e94",
+      "private": false
     }
   ]
 }
