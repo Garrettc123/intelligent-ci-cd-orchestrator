@@ -92,6 +92,28 @@ class RunnerTests(unittest.TestCase):
                 resolve_project(self.workspace, directory)
 
 
+    def test_exact_commit_pin_refuses_other_valid_commit(self):
+        doc = json.loads(self.manifest.read_text())
+        doc["repositories"][0]["expected_commit"] = "f" * 40
+        doc["repositories"][0]["private"] = False
+        self.manifest.write_text(json.dumps(doc))
+        report, _ = run(self.manifest, self.workspace, self.output)
+        self.assertEqual(report["status"], "failed_or_blocked")
+        self.assertEqual(report["repositories"][0]["status"], "blocked")
+        self.assertEqual(report["repositories"][0]["checks"], [])
+        self.assertEqual(report["repositories"][0]["reason"],
+                         "Source HEAD does not match pinned approved commit")
+
+    def test_invalid_commit_or_private_flag_rejected_before_execution(self):
+        for key, value in (("expected_commit", "main"),
+                           ("expected_commit", "A" * 40),
+                           ("private", "yes")):
+            doc = json.loads(self.manifest.read_text())
+            doc["repositories"][0][key] = value
+            self.manifest.write_text(json.dumps(doc))
+            with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                load_manifest(self.manifest, "smoke")
+
     def test_origin_mismatch_blocks_check(self):
         subprocess.run(["git", "-C", str(self.checkout), "remote", "set-url", "origin",
                         "https://github.com/SomeoneElse/sample.git"], check=True)
