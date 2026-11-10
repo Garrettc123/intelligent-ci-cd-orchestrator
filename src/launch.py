@@ -37,12 +37,34 @@ def _clone(repo: dict, workspace: Path, *, timeout: int = 120) -> None:
         "GCM_INTERACTIVE": "Never",
         "LANG": "C.UTF-8",
     }
-    result = subprocess.run(
-        ["git", "-c", "credential.helper=", "clone", "--depth", "1",
-         "--single-branch", "--branch", branch, "--", url, str(target)],
-        env=env, cwd=workspace, stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE, text=True, timeout=timeout, check=False,
-    )
+    # Public repositories need no secret. A private checkout requires a
+    # separately scoped read-only GitHub token, used ONLY by this clone child.
+    # It must never appear in the URL, argv, report or test process environment.
+    with tempfile.TemporaryDirectory(prefix="garcar-ci-auth-", dir=workspace) as auth_dir:
+        if repo.get("private", False):
+            token = os.environ.get("GARCAR_CI_GITHUB_READ_TOKEN", "")
+            if len(token) < 20 or "\\n" in token or "\\r" in token:
+                raise RuntimeError("Private repository read-only Git credential is not configured")
+            askpass = Path(auth_dir) / "askpass"
+            askpass.write_text(
+                '#!/bin/sh\\n'
+                'case "$1" in\\n'
+                '  *Username*) printf "%s\\n" "x-access-token" ;;\\n'
+                '  *Password*) printf "%s\\n" "$GARCAR_CI_GITHUB_READ_TOKEN" ;;\\n'
+                '  *) exit 1 ;;\\n'
+                'esac\\n',
+                encoding="utf-8",
+            )
+            askpass.chmod(0o700)
+            env["GIT_ASKPASS"] = str(askpass)
+            env["GIT_ASKPASS_REQUIRE"] = "force"
+            env["GARCAR_CI_GITHUB_READ_TOKEN"] = token
+        result = subprocess.run(
+            ["git", "-c", "credential.helper=", "clone", "--depth", "1",
+             "--single-branch", "--branch", branch, "--", url, str(target)],
+            env=env, cwd=workspace, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True, timeout=timeout, check=False,
+        )
     if result.returncode:
         raise RuntimeError(
             f"Git clone failed for {owner_repo}/{branch}: exit {result.returncode}"
