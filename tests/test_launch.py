@@ -103,6 +103,25 @@ class LaunchTests(unittest.TestCase):
                 "directory": "fixture",
             }, workspace)
 
+    def test_rotates_only_old_verified_reports(self):
+        with patch.object(launch, "_clone", self.checkout_fixture):
+            for _ in range(14):
+                result, location = launch.launch_once(self.manifest, self.output)
+                self.assertEqual(result["status"], "passed")
+                self.assertTrue(verify(location))
+        report_paths = sorted(self.output.glob("*/report.json"))
+        self.assertEqual(len(report_paths), 12)
+
+    def test_rotation_preserves_invalid_evidence_for_investigation(self):
+        failed = self.output / "20261109T170000Z-01234567"
+        failed.mkdir(parents=True)
+        (failed / "report.json").write_text("not-json")
+        with patch.object(launch, "_clone", self.checkout_fixture):
+            for _ in range(13):
+                launch.launch_once(self.manifest, self.output)
+        self.assertTrue(failed.exists())
+        self.assertEqual(len(list(self.output.glob("*/report.json"))), 13)
+
     def test_short_monitoring_interval_rejected(self):
         with self.assertRaises(SystemExit) as error:
             launch.main([
