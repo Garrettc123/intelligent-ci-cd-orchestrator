@@ -8,6 +8,8 @@ WORKDIR /app
 COPY --chown=runner:runner src/ ./src/
 COPY --chown=runner:runner config/ ./config/
 COPY --chown=runner:runner tests/ ./tests/
+# Compile and run real offline runner regression tests; a failing test blocks the image.
+RUN PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tests -v
 COPY deploy/entrypoint.sh /usr/local/bin/garcar-entrypoint
 RUN chmod 755 /usr/local/bin/garcar-entrypoint
 USER runner
