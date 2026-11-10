@@ -111,3 +111,32 @@ The GitHub source branch is pinned to a review commit in Railway staging. The se
 Railway mounts volumes as root, so only the image's entrypoint performs a brief `chown` and then uses `gosu` to run every clone/test subprocess as unprivileged user `runner`. The staged Railway variable `RAILWAY_RUN_UID=0` is necessary for this permission setup. We deliberately leave out `deploy.startCommand`, because Railway Docker deployments **replace** `ENTRYPOINT` when a custom start command is set, and that would bypass privilege dropping.
 
 Activation would create usage-based compute and volume charges; **do not apply staged changes without explicit budget authorization**. There is no live CI status to report from Railway yet.
+
+## Private-repository CI (GitHub Actions independent)
+
+The reviewed runner can now validate **one explicitly approved private Python PR commit** in a fresh workspace with no repository writes. This is useful when GitHub Actions reports `startup_failure`. The target is configured at runtime rather than publishing the name/branch/SHA of a private repository in this public CI codebase.
+
+Runtime configuration names (set in your host's protected environment or secret manager):
+
+- `GARCAR_CI_TARGET_REPOSITORY`: exact `Garrettc123/<repository>` identity, scoped to an owner-controlled private repo.
+- `GARCAR_CI_TARGET_BRANCH`: reviewed PR head branch, not user-supplied from a web request.
+- `GARCAR_CI_TARGET_SHA`: exact lowercase 40-hex approved commit SHA. Any branch movement blocks execution before dependency installation.
+- `GARCAR_CI_GITHUB_READ_TOKEN`: dedicated, fine-grained, **Contents: read-only** token restricted to the chosen repository, stored only in a host/Railway secret store. This must not be pasted into chat, PRs, workflow logs, or shell history.
+
+The branch is fetched with a temporary Git askpass script and authenticated HTTPS. No token is placed in clone URLs or process argv; the clone helper is removed immediately after Git exits. Dependency installation and tests receive a fresh, explicitly allowlisted environment without GitHub tokens, Stripe secrets, database URLs or deployment credentials. The runner cannot push, merge, update GitHub statuses, deploy, send messages or move money.
+
+Start with a clean, operator-controlled host containing Python 3.11+ and Git. Once the three reviewed target metadata variables and the protected read-only token are configured, execute:
+
+```bash
+python3 -m unittest discover -s tests -v
+python3 src/private_pr_ci.py --profile smoke --output "$HOME/garcar-ci-evidence"
+python3 src/private_pr_ci.py --profile full --output "$HOME/garcar-ci-evidence"
+```
+
+`smoke` runs actual Python compilation against the verified checkout. `full` creates an isolated disposable Python virtual environment, installs the target repository's pinned `requirements.txt` under a sanitized environment, then runs real compilation and the full pytest suite, preserving hash-verified reports and bounded per-check logs. A missing credential, mismatched commit, failed pip install, failed check or corrupted report **returns nonzero**. Preflight failures write a separate hash-checked `preflight.json`, never a synthetic green run.
+
+**Security boundary:** test code and `pip` dependencies still execute real code, so this is NOT a sandbox. Run only reviewed commits in a dedicated unprivileged user/container with outbound network policy appropriate to the test. Fine-grained GitHub credentials must be read-only and live only during clone. Evidence hashes detect local tampering but are neither cryptographic signatures nor an immutable audit ledger.
+
+**Activation state:** the existing Railway `garcar-independent-ci` service and evidence volume remain STAGED, with no running deployment and no new billing. Its default cron currently targets public approved remediation branches, not these private PRs. Enabling this private path on Railway requires separately configuring the target identity and read-only repository secret, reviewing its command/profile, and explicit approval for usage-based compute/storage charges. Do not enable a new paid runner or merge production PRs automatically.
+
+Passing these private CI checks does not repair a GitHub account-level Actions runner failure or automatically satisfy a repository's required GitHub status checks. Keep branch protection and human approval intact.
