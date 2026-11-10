@@ -177,7 +177,8 @@ def execute(target: dict, profile: str, output: Path) -> int:
                 "merge_performed": False,
             }, sort_keys=True), flush=True)
             return 0 if passed else 1
-        except (RuntimeError, OSError, subprocess.TimeoutExpired) as error:
+        except (RuntimeError, OSError, ValueError, KeyError, TypeError,
+                subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
             # Never return or log token values, command environment, or raw pip output.
             receipt = record_preflight(output, target, profile, stage,
                                        type(error).__name__ + ": " + str(error), None)
