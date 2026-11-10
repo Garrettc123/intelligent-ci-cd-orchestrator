@@ -105,10 +105,11 @@ class RunnerTests(unittest.TestCase):
                          "Source HEAD does not match pinned approved commit")
 
     def test_invalid_commit_or_private_flag_rejected_before_execution(self):
+        baseline = json.loads(self.manifest.read_text())
         for key, value in (("expected_commit", "main"),
                            ("expected_commit", "A" * 40),
                            ("private", "yes")):
-            doc = json.loads(self.manifest.read_text())
+            doc = json.loads(json.dumps(baseline))
             doc["repositories"][0][key] = value
             self.manifest.write_text(json.dumps(doc))
             with self.subTest(key=key, value=value), self.assertRaises(ValueError):
