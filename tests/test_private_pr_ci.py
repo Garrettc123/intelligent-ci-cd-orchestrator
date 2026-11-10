@@ -52,6 +52,16 @@ class PrivateCIContracts(unittest.TestCase):
             with self.subTest(field=field, bad=bad), self.assertRaises(ValueError):
                 private_ci.validated_target({**self.env, field: bad})
 
+    def test_bootstrap_environment_drops_read_credentials(self):
+        with patch.dict(os.environ, {
+            "GARCAR_CI_GITHUB_READ_TOKEN": "private-ci-fake-token",
+            "STRIPE_SECRET_KEY": "test-only-fake-key",
+        }):
+            clean = private_ci.scrubbed_env(self.root)
+        self.assertNotIn("GARCAR_CI_GITHUB_READ_TOKEN", clean)
+        self.assertNotIn("STRIPE_SECRET_KEY", clean)
+        self.assertEqual(clean["GIT_TERMINAL_PROMPT"], "0")
+
     def test_private_clone_fails_closed_when_token_absent(self):
         folder = self.root / "checkout"
         folder.mkdir()
