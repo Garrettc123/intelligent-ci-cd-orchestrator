@@ -217,6 +217,53 @@
       "github_repository": "Garrettc123/zero-human-enterprise-grid",
       "expected_commit": "a17e8e29ef8dad499a44181f6d149cf657eb9e94",
       "private": false
+    },
+    {
+      "directory": "garcar-enterprise-os-ui",
+      "branch": "feat/buyer-proof-output-20261112",
+      "github_repository": "Garrettc123/garcar-enterprise-os-ui",
+      "expected_commit": "6467791c3b797291d39385582c5318e3945ff193",
+      "private": false,
+      "checks": {
+        "smoke": [
+          {
+            "name": "Real website regression suite",
+            "command": [
+              "npm",
+              "test"
+            ],
+            "timeout": 180
+          },
+          {
+            "name": "Website JavaScript syntax",
+            "command": [
+              "node",
+              "--check",
+              "server.mjs"
+            ],
+            "timeout": 60
+          }
+        ],
+        "full": [
+          {
+            "name": "Real website regression suite",
+            "command": [
+              "npm",
+              "test"
+            ],
+            "timeout": 180
+          },
+          {
+            "name": "Website JavaScript syntax",
+            "command": [
+              "node",
+              "--check",
+              "server.mjs"
+            ],
+            "timeout": 60
+          }
+        ]
+      }
     }
   ]
 }
