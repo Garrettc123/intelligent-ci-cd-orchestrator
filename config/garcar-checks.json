@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "repositories": [
     {
       "directory": "garcar-enterprise-production",
@@ -65,11 +65,14 @@
             "timeout": 900
           }
         ]
-      }
+      },
+      "github_repository": "Garrettc123/garcar-enterprise-production",
+      "expected_commit": "1445c5d347de1f93fd615b87019bbc5a5078bfb2",
+      "private": false
     },
     {
       "directory": "enterprise-unified-platform",
-      "branch": "fix/no-synthetic-dashboard-20261106",
+      "branch": "main",
       "checks": {
         "smoke": [
           {
@@ -142,7 +145,10 @@
             "timeout": 900
           }
         ]
-      }
+      },
+      "github_repository": "Garrettc123/enterprise-unified-platform",
+      "expected_commit": "983360cb46159047df8f54e03ecddcca60520bb7",
+      "private": false
     },
     {
       "directory": "zero-human-enterprise-grid",
@@ -205,6 +211,56 @@
               "tests"
             ],
             "timeout": 900
+          }
+        ]
+      },
+      "github_repository": "Garrettc123/zero-human-enterprise-grid",
+      "expected_commit": "a17e8e29ef8dad499a44181f6d149cf657eb9e94",
+      "private": false
+    },
+    {
+      "directory": "garcar-enterprise-os-ui",
+      "branch": "feat/buyer-proof-output-20261112",
+      "github_repository": "Garrettc123/garcar-enterprise-os-ui",
+      "expected_commit": "6467791c3b797291d39385582c5318e3945ff193",
+      "private": false,
+      "checks": {
+        "smoke": [
+          {
+            "name": "Real website regression suite",
+            "command": [
+              "npm",
+              "test"
+            ],
+            "timeout": 180
+          },
+          {
+            "name": "Website JavaScript syntax",
+            "command": [
+              "node",
+              "--check",
+              "server.mjs"
+            ],
+            "timeout": 60
+          }
+        ],
+        "full": [
+          {
+            "name": "Real website regression suite",
+            "command": [
+              "npm",
+              "test"
+            ],
+            "timeout": 180
+          },
+          {
+            "name": "Website JavaScript syntax",
+            "command": [
+              "node",
+              "--check",
+              "server.mjs"
+            ],
+            "timeout": 60
           }
         ]
       }
