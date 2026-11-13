@@ -17,7 +17,7 @@ import sys
 import tempfile
 from datetime import datetime, timezone
 
-from cicd_orchestrator import git, verify
+from cicd_orchestrator import git, run, verify
 from launch import _clone
 
 OWNER_REPO = re.compile(r"^Garrettc123/[A-Za-z0-9_.-]+$")
@@ -39,8 +39,20 @@ def validated_target(environment: dict[str, str]) -> dict:
             "branch": branch, "private": True, "expected_commit": commit}
 
 
-def make_manifest(target: dict) -> dict:
+def make_manifest(target: dict, suite: str = "all") -> dict:
     """Checks are hardcoded in this reviewed runner; external PRs cannot edit them."""
+    if suite not in ("all", "mesh"):
+        raise ValueError("Unsupported test suite")
+    command = ["python", "-m", "pytest", "-q", "-p", "no:cacheprovider"]
+    if suite == "mesh":
+        command.extend([
+            "tests/test_mesh_transport.py",
+            "tests/test_mesh_bridge.py",
+            "tests/test_mesh_api_e2e.py",
+            "tests/test_mesh_audit_consumer.py",
+            "tests/test_mesh_peer_receipts.py",
+            "tests/test_mesh_preflight.py",
+        ])
     return {
         "schema_version": 2,
         "repositories": [{
@@ -53,8 +65,8 @@ def make_manifest(target: dict) -> dict:
                     {"name": "Python source syntax",
                      "command": ["python", "-m", "compileall", "-q", "main.py", "sync", "tests"],
                      "timeout": 120},
-                    {"name": "Full Python pytest suite",
-                     "command": ["python", "-m", "pytest", "-q", "-p", "no:cacheprovider"],
+                    {"name": "Mesh contract pytest suite" if suite == "mesh" else "Full Python pytest suite",
+                     "command": command,
                      "timeout": 900},
                 ],
             },
@@ -113,7 +125,7 @@ def _run_process(argv: list[str], cwd: Path, env: dict[str, str],
                           text=True, timeout=timeout, check=False)
 
 
-def execute(target: dict, profile: str, output: Path) -> int:
+def execute(target: dict, profile: str, output: Path, suite: str = "all") -> int:
     output = output.resolve()
     output.mkdir(mode=0o700, parents=True, exist_ok=True)
     stage = "checkout"
@@ -150,7 +162,7 @@ def execute(target: dict, profile: str, output: Path) -> int:
                 interpreter = Path(sys.executable)
             stage = "application-tests"
             manifest = root / "manifest.json"
-            manifest.write_text(json.dumps(make_manifest(target)), encoding="utf-8")
+            manifest.write_text(json.dumps(make_manifest(target, suite)), encoding="utf-8")
             runner = Path(__file__).with_name("cicd_orchestrator.py")
             command = [str(interpreter), str(runner), "run",
                        "--manifest", str(manifest), "--workspace", str(workspace),
@@ -190,10 +202,75 @@ def execute(target: dict, profile: str, output: Path) -> int:
             return 1
 
 
+def execute_local(target: dict, profile: str, output: Path, checkout: Path,
+                  suite: str = "all") -> int:
+    """Run against a clean pinned local Git checkout without cloning or pip.
+
+    The current interpreter supplies the already-installed dependencies.
+    Source identity and cleanliness are checked by the existing runner before
+    and after each run. Local origin configuration is not independent proof
+    of remote provenance; use a trusted, verified checkout.
+    """
+    try:
+        if checkout.is_symlink():
+            raise ValueError("Checkout must not be a symlink")
+        checkout = checkout.resolve(strict=True)
+        if not checkout.is_dir() or checkout.name != target["directory"]:
+            raise ValueError("Checkout directory name must match the target repository")
+        output = output.resolve()
+        if output == checkout or output.is_relative_to(checkout):
+            raise ValueError("Evidence output must be outside the checkout")
+        output.mkdir(mode=0o700, parents=True, exist_ok=True)
+    except (ValueError, OSError) as error:
+        print(json.dumps({
+            "runner": "garcar-private-pr-ci", "status": "blocked",
+            "stage": "local-preflight", "reason": str(error),
+            "deployment_performed": False, "merge_performed": False,
+        }, sort_keys=True), flush=True)
+        return 1
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="garcar-ci-local-") as tmp:
+            manifest = Path(tmp) / "manifest.json"
+            manifest.write_text(json.dumps(make_manifest(target, suite)), encoding="utf-8")
+            report, evidence = run(manifest, checkout.parent, output, profile)
+        verified = evidence.parent == output and verify(evidence)
+        records = report.get("repositories", [])
+        passed = (
+            verified and report.get("status") == "passed"
+            and len(records) == 1 and records[0].get("status") == "passed"
+            and records[0].get("commit") == target["expected_commit"]
+        )
+        print(json.dumps({
+            "runner": "garcar-private-pr-ci",
+            "status": "passed" if passed else "failed_or_blocked",
+            "profile": profile, "suite": suite,
+            "source_mode": "local_checkout", "repository": target["github_repository"],
+            "commit": target["expected_commit"], "report_directory": str(evidence),
+            "evidence_verified": verified, "deployment_performed": False,
+            "merge_performed": False,
+        }, sort_keys=True), flush=True)
+        return 0 if passed else 1
+    except (RuntimeError, OSError, ValueError, KeyError, TypeError,
+            subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+        receipt = record_preflight(output, target, profile, "local-tests",
+                                   type(error).__name__ + ": " + str(error), None)
+        print(json.dumps({
+            "runner": "garcar-private-pr-ci", "status": "blocked",
+            "stage": "local-tests", "receipt_directory": str(receipt),
+            "deployment_performed": False, "merge_performed": False,
+        }, sort_keys=True), flush=True)
+        return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run a pinned private PR without GitHub Actions")
     parser.add_argument("--profile", choices=("smoke", "full"), default="full")
     parser.add_argument("--output", type=Path, default=Path("ci-results"))
+    parser.add_argument("--suite", choices=("all", "mesh"), default="all",
+                        help="Use the full repository suite or the reviewed mesh contract tests")
+    parser.add_argument("--local-checkout", type=Path,
+                        help="Use an existing pinned checkout; do not clone or install dependencies")
     args = parser.parse_args(argv)
     try:
         target = validated_target(dict(os.environ))
@@ -201,7 +278,9 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"runner": "garcar-private-pr-ci", "status": "blocked",
                           "reason": str(error), "deployment_performed": False}), flush=True)
         return 2
-    return execute(target, args.profile, args.output)
+    if args.local_checkout:
+        return execute_local(target, args.profile, args.output, args.local_checkout, args.suite)
+    return execute(target, args.profile, args.output, args.suite)
 
 
 if __name__ == "__main__":
