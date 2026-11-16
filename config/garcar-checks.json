@@ -264,6 +264,73 @@
           }
         ]
       }
+    },
+    {
+      "directory": "garcar-emergency-payments",
+      "branch": "audit/payment-readiness-security-20261116",
+      "github_repository": "Garrettc123/garcar-emergency-payments",
+      "expected_commit": "b6d0e6b8acdeac457474486060a69cf187b36db0",
+      "private": false,
+      "checks": {
+        "smoke": [
+          {
+            "name": "Python compilation",
+            "command": [
+              "python",
+              "-m",
+              "compileall",
+              "-q",
+              "main.py",
+              "tests"
+            ],
+            "timeout": 120
+          },
+          {
+            "name": "All receiver regression tests",
+            "command": [
+              "python",
+              "-m",
+              "unittest",
+              "discover",
+              "-s",
+              "tests",
+              "-p",
+              "test_*.py",
+              "-v"
+            ],
+            "timeout": 180
+          }
+        ],
+        "full": [
+          {
+            "name": "Python compilation",
+            "command": [
+              "python",
+              "-m",
+              "compileall",
+              "-q",
+              "main.py",
+              "tests"
+            ],
+            "timeout": 120
+          },
+          {
+            "name": "All receiver regression tests",
+            "command": [
+              "python",
+              "-m",
+              "unittest",
+              "discover",
+              "-s",
+              "tests",
+              "-p",
+              "test_*.py",
+              "-v"
+            ],
+            "timeout": 180
+          }
+        ]
+      }
     }
   ]
 }
