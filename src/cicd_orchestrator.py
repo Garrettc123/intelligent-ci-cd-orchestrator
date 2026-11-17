@@ -110,6 +110,12 @@ def load_manifest(path: Path, profile: str) -> tuple[list[dict], str]:
         identity = repo.get("github_repository")
         if not isinstance(identity, str) or not _GITHUB_NAME.fullmatch(identity):
             raise ValueError("Every repository must declare canonical github_repository")
+        if type(repo.get("private", False)) is not bool:
+            raise ValueError("private must be a boolean")
+        expected = repo.get("expected_commit")
+        if expected is not None and (not isinstance(expected, str)
+                                     or not re.fullmatch(r"[0-9a-f]{40}", expected)):
+            raise ValueError("expected_commit must be a lowercase 40-character SHA")
         checks = repo.get("checks", {}).get(profile)
         if not isinstance(checks, list) or not checks:
             raise ValueError(f"Missing checks for {directory}: {profile}")
@@ -219,8 +225,9 @@ def run(manifest: Path, workspace: Path, output: Path, profile: str = "smoke", *
     for repo in repos:
         name = repo["directory"]
         record = {"repository": name, "expected_branch": repo["branch"],
-                  "expected_github_repository": repo["github_repository"], "status": "blocked",
-                  "commit": None, "checks": []}
+                  "expected_github_repository": repo["github_repository"],
+                  "expected_commit": repo.get("expected_commit"),
+                  "status": "blocked", "commit": None, "checks": []}
         records.append(record)
         try:
             folder = resolve_project(workspace, name)
@@ -231,6 +238,8 @@ def run(manifest: Path, workspace: Path, output: Path, profile: str = "smoke", *
                            "dirty": before["dirty"]})
             if before["branch"] != repo["branch"]:
                 raise ValueError("Expected branch " + repo["branch"] + ", got " + str(before["branch"]))
+            if repo.get("expected_commit") and before["commit"] != repo["expected_commit"]:
+                raise ValueError("Source HEAD does not match pinned approved commit")
             origin = git(folder, "config", "--get", "remote.origin.url")
             if github_identity(origin) != repo["github_repository"].casefold():
                 raise ValueError("Git origin does not match approved repository")

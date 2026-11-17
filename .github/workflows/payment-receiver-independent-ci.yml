@@ -1,0 +1,34 @@
+name: independently verify pinned Garcar payment receiver
+
+on:
+  pull_request:
+    paths:
+      - "config/garcar-checks.json"
+      - "src/**"
+      - "scripts/verify_payment_receiver.py"
+      - ".github/workflows/payment-receiver-independent-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-payment-receiver:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      GIT_TERMINAL_PROMPT: "0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Verify independent runner tests
+        run: |
+          python -m unittest discover -s tests -v
+      - name: Verify pinned receiver source and actual checks
+        run: |
+          python scripts/verify_payment_receiver.py

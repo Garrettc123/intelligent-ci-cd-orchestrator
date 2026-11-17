@@ -1,0 +1,20 @@
+[Unit]
+Description=Garcar Independent CI (remote polling, no deployments)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/intelligent-ci-cd-orchestrator
+ExecStart=/usr/bin/env python3 src/launch.py --output %h/garcar-ci-evidence --profile smoke --interval 900
+Restart=on-failure
+RestartSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/garcar-ci-evidence
+UMask=0077
+
+[Install]
+WantedBy=default.target

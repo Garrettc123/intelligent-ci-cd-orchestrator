@@ -1,0 +1,6 @@
+.git
+ci-results
+__pycache__
+*.pyc
+.venv
+*.zip
