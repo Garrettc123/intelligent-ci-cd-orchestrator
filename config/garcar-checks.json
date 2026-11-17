@@ -267,9 +267,9 @@
     },
     {
       "directory": "garcar-emergency-payments",
-      "branch": "audit/payment-readiness-security-20261116",
+      "branch": "fix/subscription-invoice-dedupe-20261116",
       "github_repository": "Garrettc123/garcar-emergency-payments",
-      "expected_commit": "b6d0e6b8acdeac457474486060a69cf187b36db0",
+      "expected_commit": "a5feb1d51c39d7916b78ed8ea4972110e8367717",
       "private": false,
       "checks": {
         "smoke": [
