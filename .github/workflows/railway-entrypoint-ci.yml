@@ -1,0 +1,33 @@
+name: Railway Independent CI Startup Guard
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test-startup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate entrypoint syntax
+        run: sh -n deploy/entrypoint.sh
+      - name: Test isolated CI runner
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
+      - name: Verify root bootstrap and unprivileged execution contract
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          docker = Path("Dockerfile").read_text(encoding="utf-8")
+          entrypoint = Path("deploy/entrypoint.sh").read_text(encoding="utf-8")
+          assert "USER root" in docker, "Railway volume bootstrap must have permission"
+          assert 'ENTRYPOINT ["/usr/local/bin/garcar-entrypoint"]' in docker
+          assert 'exec gosu runner "$@"' in entrypoint, "Test execution must be unprivileged"
+          assert "GARCAR_CI_GITHUB_READ_TOKEN" in entrypoint
+          assert "read_only_github_credential_not_configured" in entrypoint
+          assert "evidence_volume_not_writable_by_runner" in entrypoint
+          print("Entrypoint contract passed; no remote deployment performed")
+          PY

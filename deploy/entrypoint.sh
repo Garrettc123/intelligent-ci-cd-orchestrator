@@ -1,22 +1,41 @@
 #!/bin/sh
 set -eu
-# Railway volumes are root-owned; only permissions setup may run as root.
-# All repo cloning, dependency setup and tests execute as unprivileged runner.
-case "${GARCAR_CI_MODE:-public}" in
-  public) ;;
+# Railway mounts the evidence volume as root. Bootstrap ownership as root,
+# then drop ALL Git fetches, dependency installation and tests to runner.
+# No credentials are printed; missing private auth fails closed.
+MODE="${GARCAR_CI_MODE:-public}"
+OUT="/home/runner/ci-results"
+case "$MODE" in
+  public)
+    ;;
   private)
-    # This mode is deliberately opt-in and fails closed without approved
-    # target identity, pinned commit and a read-only private repo credential.
-    set -- python src/private_pr_ci.py --profile full --output /home/runner/ci-results
+    if [ -z "${GARCAR_CI_GITHUB_READ_TOKEN:-}" ]; then
+      echo '{"runner":"garcar-independent-ci","status":"blocked","reason":"read_only_github_credential_not_configured","deployment_performed":false}' >&2
+      exit 3
+    fi
+    if [ -z "${GARCAR_CI_TARGET_REPOSITORY:-}" ] ||
+       [ -z "${GARCAR_CI_TARGET_BRANCH:-}" ] ||
+       [ -z "${GARCAR_CI_TARGET_SHA:-}" ]; then
+      echo '{"runner":"garcar-independent-ci","status":"blocked","reason":"approved_target_identity_or_sha_missing","deployment_performed":false}' >&2
+      exit 3
+    fi
+    set -- python src/private_pr_ci.py --profile full --output "$OUT"
     ;;
   *)
-    echo "Invalid GARCAR_CI_MODE; permitted: public or private" >&2
+    echo '{"runner":"garcar-independent-ci","status":"blocked","reason":"unsupported_ci_mode","deployment_performed":false}' >&2
     exit 2
     ;;
 esac
+
 if [ "$(id -u)" -eq 0 ]; then
-  mkdir -p /home/runner/ci-results
-  chown runner:runner /home/runner/ci-results
+  mkdir -p "$OUT"
+  chown runner:runner "$OUT"
+  chmod 0700 "$OUT"
+  echo '{"runner":"garcar-independent-ci","bootstrap":"volume_owned_by_runner","tests_as_root":false}' >&2
   exec gosu runner "$@"
+fi
+if [ ! -d "$OUT" ] || [ ! -w "$OUT" ]; then
+  echo '{"runner":"garcar-independent-ci","status":"blocked","reason":"evidence_volume_not_writable_by_runner","deployment_performed":false}' >&2
+  exit 3
 fi
 exec "$@"

@@ -12,7 +12,9 @@ COPY --chown=runner:runner tests/ ./tests/
 RUN PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tests -v
 COPY deploy/entrypoint.sh /usr/local/bin/garcar-entrypoint
 RUN chmod 755 /usr/local/bin/garcar-entrypoint
-USER runner
+# Bootstrap runs briefly as root solely to repair Railway volume ownership.
+# The entrypoint MUST drop to uid 10001 before any clone, install or tests.
+USER root
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 ENTRYPOINT ["/usr/local/bin/garcar-entrypoint"]
 CMD ["python", "src/launch.py", "--profile", "smoke", "--output", "/home/runner/ci-results"]
