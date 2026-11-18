@@ -47,7 +47,7 @@ To validate integration tests and builds, use the `full` profile. Installing dep
 
 ## Limitations and safety
 
-This system does not automatically run on this chat server, on GitHub or on Railway. An always-on host is required for continuous execution. No paid hosting was created. It does not prove deployed services are healthy, receive Stripe payments or satisfy every security criterion. Never run a test manifest from an untrusted PR and never put credentials inside a manifest. `--watch` watches checked-out commits, not remote GitHub branches.
+Continuous execution requires an explicitly configured host or scheduler; check the actual deployment and usage state before relying on it. The runner does not prove deployed services are healthy, receive Stripe payments or satisfy every security criterion. Never run a test manifest from an untrusted PR and never put credentials inside a manifest. `--watch` watches checked-out commits, not remote GitHub branches.
 
 ## Optional persistent monitoring on Ubuntu / systemd
 
@@ -94,7 +94,7 @@ The `Dockerfile` uses a non-root Python/Node/Git image. A separate staging Railw
 python src/launch.py --profile smoke --output /home/runner/ci-results --interval 900
 ```
 
-Do **not** repoint Garcar production/revenue services. Persistent evidence requires a provider volume; without one, only stdout summaries survive restarts. A CI service and 512 MB evidence volume have been **staged only** inside the existing Railway `garcar-review-staging` project. They are not provisioned, running or billing until the owner explicitly applies the staged changes. No app was deployed.
+Do **not** repoint Garcar production/revenue services. Persistent evidence requires a provider volume; without one, only stdout summaries survive restarts. Check Railway service and billing state before changing resources: existing services and volumes can incur usage charges.
 
 ### Ubuntu / Termux startup
 
@@ -104,13 +104,13 @@ An optional Linux user unit is in `deploy/garcar-ci-remote.service`. It runs eve
 
 The bootstrap passed isolated tests using a real temporary Git repository and deliberate clone failures. Full app checkouts were unavailable to the model-hosted execution environment (GitHub DNS is inaccessible there), so passing bootstrap tests **do not** mean PR #37, PR #92 or PR #5 application suites passed. No merge or production deployment authorization is implied.
 
-### Prepared Railway staging configuration — awaiting activation
+### Railway staging configuration
 
-The GitHub source branch is pinned to a review commit in Railway staging. The service is called `garcar-independent-ci`; it is a **staged-create** resource, not live. The 15-minute cron and Dockerfile settings are read from `railway.json` when deployed. A 512 MB evidence volume is staged at `/home/runner/ci-results`.
+The worker configuration supports a pinned review commit, a 15-minute cron and a persistent evidence volume. Inspect the current Railway service and environment before relying on any of those settings.
 
 Railway mounts volumes as root, so only the image's entrypoint performs a brief `chown` and then uses `gosu` to run every clone/test subprocess as unprivileged user `runner`. The staged Railway variable `RAILWAY_RUN_UID=0` is necessary for this permission setup. We deliberately leave out `deploy.startCommand`, because Railway Docker deployments **replace** `ENTRYPOINT` when a custom start command is set, and that would bypass privilege dropping.
 
-Activation would create usage-based compute and volume charges; **do not apply staged changes without explicit budget authorization**. There is no live CI status to report from Railway yet.
+Compute and volume resources can incur usage-based charges; do not create or expand them without budget authorization.
 
 ## Private-repository CI (GitHub Actions independent)
 
@@ -137,10 +137,10 @@ python3 src/private_pr_ci.py --profile full --output "$HOME/garcar-ci-evidence"
 
 **Security boundary:** test code and `pip` dependencies still execute real code, so this is NOT a sandbox. Run only reviewed commits in a dedicated unprivileged user/container with outbound network policy appropriate to the test. Fine-grained GitHub credentials must be read-only and live only during clone. Evidence hashes detect local tampering but are neither cryptographic signatures nor an immutable audit ledger.
 
-**Activation state:** the existing Railway `garcar-independent-ci` service and evidence volume remain STAGED, with no running deployment and no new billing. Its default cron currently targets public approved remediation branches, not these private PRs. Enabling this private path on Railway requires separately configuring the target identity and read-only repository secret, reviewing its command/profile, and explicit approval for usage-based compute/storage charges. Do not enable a new paid runner or merge production PRs automatically.
+**Activation state:** inspect Railway directly for the current worker state, target and billing. The remote private-clone path requires a separate read-only credential. Do not enable a new paid runner or merge production PRs automatically.
 
 
-For the *already staged* Railway worker, the entrypoint also supports a deliberate mode switch. Default is `GARCAR_CI_MODE=public` (the original approved public smoke suite). If an operator later configures `GARCAR_CI_MODE=private`, along with the protected repository, branch, pinned SHA and read-only credential variables, the same worker runs the full private Python suite. It still runs under the unprivileged `runner` identity, never merges or deploys, and needs explicit hosting-cost approval before activation. Do not select private mode with missing credentials; it will produce only a blocked preflight result.
+For the Railway worker, the entrypoint also supports a deliberate mode switch. Default is `GARCAR_CI_MODE=public` (the original approved public smoke suite). If an operator later configures `GARCAR_CI_MODE=private`, along with the protected repository, branch, pinned SHA and read-only credential variables, the same worker runs the full private Python suite. It still runs under the unprivileged `runner` identity, never merges or deploys, and needs explicit hosting-cost approval before activation. Do not select private mode with missing credentials; it will produce only a blocked preflight result.
 
 Passing these private CI checks does not repair a GitHub account-level Actions runner failure or automatically satisfy a repository's required GitHub status checks. Keep branch protection and human approval intact.
 
@@ -149,4 +149,18 @@ Passing these private CI checks does not repair a GitHub account-level Actions r
 - The public smoke manifest now pins each repository to an exact reviewed commit. The original `enterprise-unified-platform` review branch was merged and deleted, so that checkout now targets an inspected `main` commit. If a branch moves, the runner fails closed until the expected commit is reviewed and updated.
 - The Railway Dockerfile runs the actual independent-runner Python regression suite during image build. Any failing suite blocks deployment; a build success is **not** proof the downstream application suites passed.
 - On the 512 MB persistent evidence volume, the public launcher rotates older **already verified** report directories, retaining the latest 12. Corrupted/unverified directories are preserved for investigation. Back up critical receipts to external storage before rotation; hash verification provides integrity checks, not signing or immutability.
-- The stage remains configured for the public smoke profile. The private security PR needs a separate read-only GitHub credential before enabling `GARCAR_CI_MODE=private`; no token is available in the connected CI environment.
+- Check the current worker target before using it. Remote private cloning needs a read-only repository credential; a verified local checkout can use the token-free mode below.
+
+### Verify a trusted local checkout without a private token
+
+If approved source is already available in a clean Git checkout, the runner can execute locally without cloning, installing packages, or accessing a private GitHub token. Set the three non-secret target variables above to the reviewed repository, branch and exact commit; set GARCAR_CI_CHECKOUT to the checkout directory and GARCAR_CI_EVIDENCE to a directory outside it. Run this command from the independent-runner repository using a trusted Python environment that already contains the target's test dependencies:
+
+~~~bash
+python3 src/private_pr_ci.py \
+  --local-checkout "$GARCAR_CI_CHECKOUT" \
+  --profile full --suite mesh --output "$GARCAR_CI_EVIDENCE"
+~~~
+
+The mesh suite runs the six reviewed mesh test files, including peer receipt and recovery tests. Use --suite all for the repository's entire pytest suite. The runner checks the configured Git origin, branch, exact commit and clean working tree before and after execution; it records real command exits, logs and their hashes. Missing dependencies or failed checks produce a nonzero result. The smoke profile compiles source but does not run pytest.
+
+Local mode does not verify dependency versions or independently authenticate the remote. Review the source and interpreter environment before use. It is not a sandbox: tested code has the host user's file and network access. Reports are hash-checked but unsigned, and are independent evidence rather than GitHub required status checks. Local mode does not install packages, deploy, merge, or create cloud resources.

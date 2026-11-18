@@ -138,6 +138,87 @@ class PrivateCIContracts(unittest.TestCase):
         self.assertEqual(report["repositories"][0]["status"], "passed")
         self.assertFalse(report["deployment_performed"])
 
+    def local_checkout(self, *, broken=False):
+        """Create a real disposable Git checkout for local-runner tests."""
+        folder = self.root / "work" / "fixture-private"
+        folder.mkdir(parents=True)
+        def git(*args):
+            return subprocess.run(["git", "-C", str(folder), *args], check=True,
+                                  capture_output=True, text=True).stdout.strip()
+        git("init", "-b", self.env["GARCAR_CI_TARGET_BRANCH"])
+        git("config", "user.email", "ci@local.invalid")
+        git("config", "user.name", "CI Fixture")
+        git("remote", "add", "origin", "https://github.com/Garrettc123/fixture-private.git")
+        (folder / "main.py").write_text("def broken(:\n" if broken else "print('ok')\n")
+        (folder / "sync").mkdir()
+        (folder / "sync" / "__init__.py").write_text("")
+        (folder / "tests").mkdir()
+        (folder / "tests" / "test_sample.py").write_text("def test_ok(): assert True\n")
+        git("add", "-A")
+        git("commit", "-m", "fixture")
+        target = private_ci.validated_target(self.env)
+        target["expected_commit"] = git("rev-parse", "HEAD")
+        return target, folder
+
+    def test_local_checkout_executes_without_clone_or_dependency_install(self):
+        target, folder = self.local_checkout()
+        output = self.root / "local-evidence"
+        with patch.object(private_ci, "_clone", side_effect=AssertionError("unexpected clone")):
+            with patch.object(private_ci, "_run_process", side_effect=AssertionError("unexpected bootstrap")):
+                result = private_ci.execute_local(target, "smoke", output, folder)
+        self.assertEqual(result, 0)
+        report_path = next(output.glob("*/report.json"))
+        self.assertTrue(verify(report_path.parent))
+        report = json.loads(report_path.read_text())
+        self.assertEqual(report["repositories"][0]["commit"], target["expected_commit"])
+        self.assertEqual(report["repositories"][0]["checks"][0]["exit_code"], 0)
+        self.assertFalse(report["deployment_performed"])
+
+    def test_local_checkout_rejects_wrong_commit_and_dirty_source(self):
+        target, folder = self.local_checkout()
+        bad_target = {**target, "expected_commit": "b" * 40}
+        output = self.root / "bad-commit"
+        self.assertNotEqual(private_ci.execute_local(bad_target, "smoke", output, folder), 0)
+        report = json.loads(next(output.glob("*/report.json")).read_text())
+        self.assertEqual(report["repositories"][0]["status"], "blocked")
+        self.assertEqual(report["repositories"][0]["checks"], [])
+        (folder / "main.py").write_text("print('modified')\n")
+        dirty_output = self.root / "dirty"
+        self.assertNotEqual(private_ci.execute_local(target, "smoke", dirty_output, folder), 0)
+        report = json.loads(next(dirty_output.glob("*/report.json")).read_text())
+        self.assertEqual(report["repositories"][0]["status"], "blocked")
+        self.assertEqual(report["repositories"][0]["checks"], [])
+
+    def test_local_checkout_propagates_a_real_compile_failure(self):
+        target, folder = self.local_checkout(broken=True)
+        output = self.root / "failed"
+        self.assertNotEqual(private_ci.execute_local(target, "smoke", output, folder), 0)
+        report_path = next(output.glob("*/report.json"))
+        self.assertTrue(verify(report_path.parent))
+        report = json.loads(report_path.read_text())
+        self.assertEqual(report["repositories"][0]["status"], "failed")
+        self.assertNotEqual(report["repositories"][0]["checks"][0]["exit_code"], 0)
+
+    def test_local_checkout_refuses_evidence_inside_source(self):
+        target, folder = self.local_checkout()
+        output = folder / "evidence"
+        self.assertNotEqual(private_ci.execute_local(target, "smoke", output, folder), 0)
+        self.assertFalse(output.exists())
+
+    def test_mesh_suite_includes_all_six_contract_files(self):
+        target = private_ci.validated_target(self.env)
+        doc = private_ci.make_manifest(target, "mesh")
+        command = doc["repositories"][0]["checks"]["full"][1]["command"]
+        expected = (
+            "tests/test_mesh_transport.py", "tests/test_mesh_bridge.py",
+            "tests/test_mesh_api_e2e.py", "tests/test_mesh_audit_consumer.py",
+            "tests/test_mesh_peer_receipts.py", "tests/test_mesh_preflight.py",
+        )
+        for path in expected:
+            self.assertEqual(command.count(path), 1)
+        with self.assertRaises(ValueError):
+            private_ci.make_manifest(target, "unexpected")
+
 
 if __name__ == "__main__":
     unittest.main()
