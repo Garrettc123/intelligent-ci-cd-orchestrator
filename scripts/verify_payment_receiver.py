@@ -34,7 +34,7 @@ def main() -> int:
         return 2
     if target.get("branch") != "fix/subscription-invoice-dedupe-20261116" or (
         target.get("expected_commit") !=
-        "a5feb1d51c39d7916b78ed8ea4972110e8367717"
+        "92e8aaa50b75a9adfaa5e5197f83b0f95b7d5fb0"
     ):
         print("Pinned receiver branch or SHA changed without review", file=sys.stderr)
         return 2
