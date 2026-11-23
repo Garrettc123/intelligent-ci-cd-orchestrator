@@ -8,10 +8,10 @@ WORKDIR /app
 COPY --chown=runner:runner src/ ./src/
 COPY --chown=runner:runner config/ ./config/
 COPY --chown=runner:runner tests/ ./tests/
+COPY --chown=runner:runner deploy/entrypoint.sh ./deploy/entrypoint.sh
 # Compile and run real offline runner regression tests; a failing test blocks the image.
 RUN PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tests -v
-COPY deploy/entrypoint.sh /usr/local/bin/garcar-entrypoint
-RUN chmod 755 /usr/local/bin/garcar-entrypoint
+RUN install -m 755 /app/deploy/entrypoint.sh /usr/local/bin/garcar-entrypoint
 # Bootstrap runs briefly as root solely to repair Railway volume ownership.
 # The entrypoint MUST drop to uid 10001 before any clone, install or tests.
 USER root
