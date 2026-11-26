@@ -138,6 +138,56 @@ class PrivateCIContracts(unittest.TestCase):
         self.assertEqual(report["repositories"][0]["status"], "passed")
         self.assertFalse(report["deployment_performed"])
 
+    def test_data_room_requires_explicit_historical_baseline(self):
+        room = {**self.env,
+                "GARCAR_CI_TARGET_REPOSITORY": "Garrettc123/garcar-data-room"}
+        with self.assertRaisesRegex(ValueError, "historical baseline"):
+            private_ci.validated_target(room)
+        for bad in ("0" * 40, self.env["GARCAR_CI_TARGET_SHA"], "main", "A" * 40):
+            with self.subTest(baseline=bad), self.assertRaises(ValueError):
+                private_ci.validated_target({**room, "GARCAR_CI_DATA_ROOM_BASE_SHA": bad})
+
+    def test_data_room_manifest_runs_real_release_gate(self):
+        room = {**self.env, "GARCAR_CI_TARGET_REPOSITORY": "Garrettc123/garcar-data-room",
+                "GARCAR_CI_DATA_ROOM_BASE_SHA": "b" * 40}
+        target = private_ci.validated_target(room)
+        self.assertTrue(target["full_history"])
+        self.assertTrue(target["private"])
+        self.assertEqual(target["data_room_base_sha"], "b" * 40)
+        doc = private_ci.make_manifest(target)
+        config = self.root / "data_room_manifest.json"
+        config.write_text(json.dumps(doc), encoding="utf-8")
+        loaded, _ = load_manifest(config, "full")
+        commands = [x["command"] for x in loaded[0]["checks"]["full"]]
+        self.assertIn(["python", "scripts/check_release.py"], commands)
+        self.assertIn(["python", "-m", "unittest", "discover", "-s", "tests",
+                       "-p", "test_release_gate.py", "-v"], commands)
+        release = next(x for x in loaded[0]["checks"]["full"]
+                       if x["command"] == ["python", "scripts/check_release.py"])
+        self.assertEqual(release["data_room_base_sha"], "b" * 40)
+        self.assertFalse(any("pip" in str(command) for command in commands))
+
+    def test_data_room_baseline_is_only_explicitly_forwarded(self):
+        from cicd_orchestrator import execute_check
+        script = self.root / "environment_check.py"
+        script.write_text(
+            "import os\n"
+            "assert os.environ.get('DATA_ROOM_BASE_SHA') == 'b' * 40\n"
+            "assert 'STRIPE_SECRET_KEY' not in os.environ\n"
+            "assert 'GARCAR_CI_GITHUB_READ_TOKEN' not in os.environ\n",
+            encoding="utf-8",
+        )
+        check = {"name": "baseline isolation",
+                 "command": ["python", str(script)],
+                 "data_room_base_sha": "b" * 40, "timeout": 30}
+        with patch.dict(os.environ, {"DATA_ROOM_BASE_SHA": "c" * 40,
+                                     "STRIPE_SECRET_KEY": "must-not-leak",
+                                     "GARCAR_CI_GITHUB_READ_TOKEN": "must-not-leak"}):
+            outcome = execute_check(self.root, check, self.root / "logs")
+        self.assertEqual(outcome["status"], "passed")
+        self.assertEqual(outcome["exit_code"], 0)
+
+
 
 if __name__ == "__main__":
     unittest.main()
