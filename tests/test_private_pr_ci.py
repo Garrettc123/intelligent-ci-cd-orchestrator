@@ -171,10 +171,10 @@ class PrivateCIContracts(unittest.TestCase):
         from cicd_orchestrator import execute_check
         script = self.root / "environment_check.py"
         script.write_text(
-            "import os\\n"
-            "assert os.environ.get('DATA_ROOM_BASE_SHA') == 'b' * 40\\n"
-            "assert 'STRIPE_SECRET_KEY' not in os.environ\\n"
-            "assert 'GARCAR_CI_GITHUB_READ_TOKEN' not in os.environ\\n",
+            "import os\n"
+            "assert os.environ.get('DATA_ROOM_BASE_SHA') == 'b' * 40\n"
+            "assert 'STRIPE_SECRET_KEY' not in os.environ\n"
+            "assert 'GARCAR_CI_GITHUB_READ_TOKEN' not in os.environ\n",
             encoding="utf-8",
         )
         check = {"name": "baseline isolation",
