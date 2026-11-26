@@ -62,7 +62,8 @@ def _clone(repo: dict, workspace: Path, *, timeout: int = 120) -> None:
             env["GIT_ASKPASS_REQUIRE"] = "force"
             env["GARCAR_CI_GITHUB_READ_TOKEN"] = token
         result = subprocess.run(
-            ["git", "-c", "credential.helper=", "clone", "--depth", "1",
+            ["git", "-c", "credential.helper=", "clone",
+             *([] if repo.get("full_history") is True else ["--depth", "1"]),
              "--single-branch", "--branch", branch, "--", url, str(target)],
             env=env, cwd=workspace, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, text=True, timeout=timeout, check=False,
