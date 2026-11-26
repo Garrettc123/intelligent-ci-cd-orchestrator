@@ -127,6 +127,10 @@ def load_manifest(path: Path, profile: str) -> tuple[list[dict], str]:
                 raise ValueError("Duplicate check name")
             check_names.add(check["name"])
             validate_command(check.get("command"))
+            baseline = check.get("data_room_base_sha")
+            if baseline is not None and (not isinstance(baseline, str) or
+                    not re.fullmatch(r"[a-f0-9]{40}", baseline) or baseline == "0" * 40):
+                raise ValueError("Data Room release baseline must be a nonzero lowercase Git SHA")
             timeout = check.get("timeout", 180)
             if type(timeout) is not int or not 1 <= timeout <= MAX_TIMEOUT:
                 raise ValueError("Check timeout must be 1 to 3600 seconds")
@@ -164,6 +168,12 @@ def execute_check(folder: Path, check: dict, log_dir: Path) -> dict:
             "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_CONFIG_GLOBAL": os.devnull,
         }
+        # Explicit SHA only: never inherit the host's environment or credentials.
+        baseline = check.get("data_room_base_sha")
+        if baseline is not None:
+            if not isinstance(baseline, str) or not re.fullmatch(r"[a-f0-9]{40}", baseline) or baseline == "0" * 40:
+                raise ValueError("Invalid Data Room historical baseline")
+            env["DATA_ROOM_BASE_SHA"] = baseline
         if os.name == "nt":
             for key in ("SYSTEMROOT", "WINDIR", "PATHEXT", "COMSPEC"):
                 if key in os.environ:
