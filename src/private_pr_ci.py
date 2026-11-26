@@ -35,12 +35,34 @@ def validated_target(environment: dict[str, str]) -> dict:
         raise ValueError("An approved Git branch must be configured")
     if not COMMIT.fullmatch(commit):
         raise ValueError("An exact approved lowercase 40-character commit SHA is required")
-    return {"directory": repository.split("/", 1)[1], "github_repository": repository,
-            "branch": branch, "private": True, "expected_commit": commit}
+    target = {"directory": repository.split("/", 1)[1], "github_repository": repository,
+              "branch": branch, "private": True, "expected_commit": commit}
+    if repository == "Garrettc123/garcar-data-room":
+        baseline = environment.get("GARCAR_CI_DATA_ROOM_BASE_SHA", "")
+        if not COMMIT.fullmatch(baseline) or baseline == "0" * 40 or baseline == commit:
+            raise ValueError("Data Room requires a distinct nonzero historical baseline commit SHA")
+        target["data_room_base_sha"] = baseline
+        # Historical manifest comparison requires ancestry absent from depth-one clones.
+        target["full_history"] = True
+    return target
 
 
 def make_manifest(target: dict) -> dict:
     """Checks are hardcoded in this reviewed runner; external PRs cannot edit them."""
+    if target["github_repository"] == "Garrettc123/garcar-data-room":
+        baseline = target["data_room_base_sha"]
+        unit = {"name": "Data Room release-gate regression",
+                "command": ["python", "-m", "unittest", "discover", "-s", "tests",
+                            "-p", "test_release_gate.py", "-v"], "timeout": 180}
+        integrity = {"name": "Data Room real artifacts and append-only baseline",
+                     "command": ["python", "scripts/check_release.py"],
+                     "timeout": 180, "data_room_base_sha": baseline}
+        syntax = {"name": "Data Room Python source compilation",
+                  "command": ["python", "-m", "compileall", "-q", "scripts", "tests"],
+                  "timeout": 120}
+        return {"schema_version": 2, "repositories": [{**target,
+                "checks": {"smoke": [unit, integrity],
+                           "full": [unit, syntax, integrity]}}]}
     return {
         "schema_version": 2,
         "repositories": [{
@@ -128,6 +150,14 @@ def execute(target: dict, profile: str, output: Path) -> int:
                     git(checkout, "rev-parse", "HEAD") != target["expected_commit"]:
                 raise RuntimeError("Remote source moved or is not the approved commit")
             env = scrubbed_env(root)
+            if target.get("data_room_base_sha"):
+                stage = "historical-base"
+                ancestry = _run_process(
+                    ["git", "-C", str(checkout), "merge-base", "--is-ancestor",
+                     target["data_room_base_sha"], target["expected_commit"]],
+                    root, env, 30)
+                if ancestry.returncode != 0:
+                    raise RuntimeError("Historical baseline is not an ancestor of approved commit")
             if profile == "full":
                 stage = "python-environment"
                 venv = root / "venv"
@@ -136,16 +166,17 @@ def execute(target: dict, profile: str, output: Path) -> int:
                     raise RuntimeError("Isolated Python environment creation failed")
                 interpreter = venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
                 stage = "dependency-install"
-                requirements = checkout / "requirements.txt"
-                if not requirements.is_file() or requirements.is_symlink():
-                    raise RuntimeError("Trusted pinned requirements.txt missing or not a regular file")
-                installation = _run_process([
-                    str(interpreter), "-m", "pip", "install", "--no-input",
-                    "--disable-pip-version-check", "-r", str(requirements)
-                ], root, env, 600)
-                if installation.returncode != 0:
-                    raise RuntimeError("Isolated dependency installation failed (exit %s)" %
-                                       installation.returncode)
+                if not target.get("data_room_base_sha"):
+                    requirements = checkout / "requirements.txt"
+                    if not requirements.is_file() or requirements.is_symlink():
+                        raise RuntimeError("Trusted pinned requirements.txt missing or not a regular file")
+                    installation = _run_process([
+                        str(interpreter), "-m", "pip", "install", "--no-input",
+                        "--disable-pip-version-check", "-r", str(requirements)
+                    ], root, env, 600)
+                    if installation.returncode != 0:
+                        raise RuntimeError("Isolated dependency installation failed (exit %s)" %
+                                           installation.returncode)
             else:
                 interpreter = Path(sys.executable)
             stage = "application-tests"
