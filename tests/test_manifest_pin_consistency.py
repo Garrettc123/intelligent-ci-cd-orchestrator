@@ -31,14 +31,14 @@ class PublicTargetManifest(unittest.TestCase):
             self.assertTrue(target["branch"].strip())
             self.assertTrue(target["checks"]["smoke"])
 
-    def test_enterprise_main_pin_tracks_known_post_hardening_commit(self):
+    def test_enterprise_main_pin_tracks_verified_read_only_status_commit(self):
         records = [t for t in self.targets
                    if t["github_repository"] == "Garrettc123/enterprise-unified-platform"]
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0]["branch"], "main")
         self.assertEqual(
             records[0]["expected_commit"],
-            "40dc11c3922ae36cf1d9b9d687ab7166099eab2b",
+            "b93c77cd6a2368fd40b44f9f4231033df695e3df",
         )
 
     def test_no_payment_or_deploy_commands(self):
